@@ -89,3 +89,4 @@ public class AuthServiceTests
         Assert.Contains("Invalid email or password", loginResult.Error ?? "");
     }
 }
+

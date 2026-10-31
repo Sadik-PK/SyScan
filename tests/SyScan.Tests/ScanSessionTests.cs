@@ -78,3 +78,4 @@ public class ScanSessionTests
         Assert.Equal(ScanStatus.Cancelled, updated.Status);
     }
 }
+

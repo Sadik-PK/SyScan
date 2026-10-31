@@ -1,7 +1,7 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -24,6 +24,7 @@
     <ProjectReference Include="..\..\src\SyScan.Backend\SyScan.Core\SyScan.Core.csproj" />
     <ProjectReference Include="..\..\src\SyScan.Backend\SyScan.Infrastructure\SyScan.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\SyScan.Backend\SyScan.Api\SyScan.Api.csproj" />
+    <ProjectReference Include="..\..\src\SyScan.Desktop\SyScan.Scanner\SyScan.Scanner.csproj" />
   </ItemGroup>
 
 </Project>

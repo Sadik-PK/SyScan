@@ -11,6 +11,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 using SyScan.Desktop.Services;
+using SyScan.Scanner.Correlation;
+using SyScan.Scanner.FileSystem;
+using SyScan.Scanner.Games;
+using SyScan.Scanner.Historical;
+using SyScan.Scanner.Ntfs;
+using SyScan.Scanner.Signatures;
 
 namespace SyScan.Desktop.Scanner;
 
@@ -19,6 +25,17 @@ public record ModuleRunResult(bool Success, string Status, int FindingsCount, st
 public class ScanEngine
 {
     private readonly ApiClient _api;
+    private readonly SignatureEngine _signatureEngine = new();
+    private readonly GameInvestigationEngine _gameEngine = new();
+
+    // Cache of collected artifacts for final correlation
+    private readonly List<ForensicFileRecord> _collectedFiles = new();
+    private readonly List<PrefetchEntry> _collectedPrefetch = new();
+    private readonly List<BamDamEntry> _collectedBam = new();
+    private readonly List<ShimcacheEntry> _collectedShimcache = new();
+    private DeletionInvestigationResult? _collectedUsnResult;
+    private readonly List<GameInvestigationResult> _collectedGameResults = new();
+    private readonly List<SignatureMatchResult> _collectedSignatureMatches = new();
 
     public ScanEngine(ApiClient api)
     {
@@ -84,10 +101,9 @@ public class ScanEngine
             }
             catch
             {
-                // Access denied for system processes (normal in Windows without elevated rights)
+                // Access denied for system processes
             }
 
-            // Check known cheat name
             if (knownCheatSignatures.Any(sig => name.Contains(sig, StringComparison.OrdinalIgnoreCase)))
             {
                 findings++;
@@ -98,14 +114,13 @@ public class ScanEngine
                     severity = "Critical",
                     title = $"Known Cheat / Debugger Process Active: {name}.exe",
                     description = $"Process '{name}' (PID: {p.Id}) matches known game manipulation software signature.",
-                    filePath = mainModulePath ?? $"PID {p.Id}",
+                    filePath = mainModulePath ?? name,
+                    fileHash = mainModulePath != null ? ComputeFileSha256(mainModulePath) : "unreadable",
                     confidence = 95,
-                    explanation = "Process signature detected in active memory table."
+                    explanation = "Process signature identified in known cheat catalog."
                 });
             }
-            // Check process executing from temp or downloads directory
-            else if (!string.IsNullOrEmpty(mainModulePath) &&
-                     suspiciousPaths.Any(sp => mainModulePath.Contains(sp, StringComparison.OrdinalIgnoreCase)))
+            else if (mainModulePath != null && suspiciousPaths.Any(sp => mainModulePath.Contains(sp, StringComparison.OrdinalIgnoreCase)))
             {
                 findings++;
                 await _api.SubmitFindingAsync(new
@@ -113,11 +128,12 @@ public class ScanEngine
                     moduleId = "process-scanner",
                     category = "Suspicious",
                     severity = "Warning",
-                    title = $"Process Executing from Temporary Directory: {name}.exe",
-                    description = $"Process '{name}' (PID: {p.Id}) is running from '{mainModulePath}'.",
+                    title = $"Executable Running from Temporary / User Directory: {name}.exe",
+                    description = $"Process '{name}' (PID: {p.Id}) is running from suspicious path: {mainModulePath}",
                     filePath = mainModulePath,
+                    fileHash = ComputeFileSha256(mainModulePath),
                     confidence = 70,
-                    explanation = "Legitimate applications rarely execute persistently from temporary folders."
+                    explanation = "Running executables from Temp or Downloads directories is common for loaders and ephemeral cheats."
                 });
             }
         }
@@ -130,7 +146,7 @@ public class ScanEngine
     private async Task<ModuleRunResult> ScanServicesAsync(CancellationToken ct)
     {
         int findings = 0;
-        var suspiciousServices = new[] { "capcom", "kprocesshacker", "dbkp", "eneio", "gdrv", "winring0" };
+        var suspiciousServiceKeywords = new[] { "cheat", "hack", "bypass", "spoofer", "injector" };
 
         try
         {
@@ -140,34 +156,34 @@ public class ScanEngine
                 foreach (var svcName in servicesKey.GetSubKeyNames())
                 {
                     ct.ThrowIfCancellationRequested();
-                    string lowerSvc = svcName.ToLowerInvariant();
+                    using var svcSubKey = servicesKey.OpenSubKey(svcName);
+                    if (svcSubKey == null) continue;
 
-                    if (suspiciousServices.Any(s => lowerSvc.Contains(s)))
+                    string displayName = svcSubKey.GetValue("DisplayName")?.ToString() ?? svcName;
+                    string imagePath = svcSubKey.GetValue("ImagePath")?.ToString() ?? "";
+
+                    if (suspiciousServiceKeywords.Any(k => svcName.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+                                                           displayName.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+                                                           imagePath.Contains(k, StringComparison.OrdinalIgnoreCase)))
                     {
-                        using var svcKey = servicesKey.OpenSubKey(svcName);
-                        var displayName = svcKey?.GetValue("DisplayName")?.ToString() ?? svcName;
-                        var imagePath = svcKey?.GetValue("ImagePath")?.ToString();
-
                         findings++;
                         await _api.SubmitFindingAsync(new
                         {
                             moduleId = "service-scanner",
-                            category = "Detection",
-                            severity = "Critical",
-                            title = $"Vulnerable / Known Exploit Service Found: {displayName}",
-                            description = $"Service '{svcName}' (ImagePath: '{imagePath}') is known to be leveraged for kernel cheat bypass.",
+                            category = "Suspicious",
+                            severity = "Warning",
+                            title = $"Suspicious Service Found: {displayName} ({svcName})",
+                            description = $"Service '{svcName}' matches cheat-related nomenclature. ImagePath: {imagePath}",
                             filePath = imagePath,
-                            confidence = 90,
-                            explanation = "Known vulnerable signed driver / service wrapper present in system registry."
+                            confidence = 75,
+                            explanation = "Service name or binary path contains keywords associated with cheating or spoofing utilities."
                         });
                     }
                 }
             }
         }
-        catch (Exception ex)
-        {
-            return new ModuleRunResult(false, "Partial", findings, $"Service enumeration error: {ex.Message}");
-        }
+        catch (OperationCanceledException) { throw; }
+        catch { }
 
         return new ModuleRunResult(true, "Completed", findings);
     }
@@ -177,33 +193,34 @@ public class ScanEngine
     private async Task<ModuleRunResult> ScanDriversAsync(CancellationToken ct)
     {
         int findings = 0;
-        string driversDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "drivers");
-
-        if (Directory.Exists(driversDir))
+        var vulnerableDrivers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            var blacklistedDrivers = new[] { "gdrv.sys", "procexp.sys", "kprocesshacker.sys", "capcom.sys", "mhyprot2.sys" };
-            var files = Directory.GetFiles(driversDir, "*.sys");
+            "gdrv.sys", "capcom.sys", "dbk64.sys", "iqvw64e.sys", "mhyprot2.sys", "procexp.sys"
+        };
 
-            foreach (var driverFile in files)
+        string driversPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers");
+        if (Directory.Exists(driversPath))
+        {
+            var sysFiles = Directory.GetFiles(driversPath, "*.sys");
+            foreach (var driver in sysFiles)
             {
                 ct.ThrowIfCancellationRequested();
-                string fileName = Path.GetFileName(driverFile);
+                string fileName = Path.GetFileName(driver);
 
-                if (blacklistedDrivers.Contains(fileName, StringComparer.OrdinalIgnoreCase))
+                if (vulnerableDrivers.Contains(fileName))
                 {
                     findings++;
-                    string hash = ComputeFileSha256(driverFile);
                     await _api.SubmitFindingAsync(new
                     {
                         moduleId = "driver-scanner",
                         category = "Detection",
                         severity = "Critical",
-                        title = $"Vulnerable / Blacklisted Driver File Present: {fileName}",
-                        description = $"Driver file '{driverFile}' found in System32\\drivers.",
-                        filePath = driverFile,
-                        fileHash = hash,
-                        confidence = 92,
-                        explanation = "Driver has known arbitrary read/write physical memory vulnerabilities abused by kernel bypasses."
+                        title = $"Known Vulnerable / Exploited Driver: {fileName}",
+                        description = $"Driver '{fileName}' in drivers directory matches known BYOVD (Bring Your Own Vulnerable Driver) exploit list.",
+                        filePath = driver,
+                        fileHash = ComputeFileSha256(driver),
+                        confidence = 90,
+                        explanation = "Driver has known kernel vulnerabilities often abused to bypass kernel anticheat systems."
                     });
                 }
             }
@@ -217,85 +234,31 @@ public class ScanEngine
     private async Task<ModuleRunResult> ScanGameDirectoryAsync(CancellationToken ct)
     {
         int findings = 0;
-        bool foundAnyGame = false;
+        var gameResults = await _gameEngine.RunAllAsync(cancellationToken: ct);
+        _collectedGameResults.AddRange(gameResults);
 
-        // Check Minecraft directory
-        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string mcDir = Path.Combine(appData, ".minecraft");
-
-        if (Directory.Exists(mcDir))
+        foreach (var gr in gameResults)
         {
-            foundAnyGame = true;
-            string modsDir = Path.Combine(mcDir, "mods");
-            if (Directory.Exists(modsDir))
+            foreach (var f in gr.Findings)
             {
-                var modFiles = Directory.GetFiles(modsDir, "*.jar");
-                var cheatKeywords = new[] { "cheat", "hack", "xray", "wurst", "liquid", "meteor", "baritone", "clicker", "aim" };
-
-                foreach (var mod in modFiles)
+                if (f.ArtifactType is "Mod" or "DllInjection" or "Executor")
                 {
-                    ct.ThrowIfCancellationRequested();
-                    string modName = Path.GetFileName(mod);
-                    if (cheatKeywords.Any(k => modName.Contains(k, StringComparison.OrdinalIgnoreCase)))
+                    findings++;
+                    await _api.SubmitFindingAsync(new
                     {
-                        findings++;
-                        await _api.SubmitFindingAsync(new
-                        {
-                            moduleId = "game-directory",
-                            category = "Detection",
-                            severity = "Critical",
-                            title = $"Suspicious Mod in Minecraft Directory: {modName}",
-                            description = $"Mod file '{mod}' matched known cheat pattern.",
-                            filePath = mod,
-                            fileHash = ComputeFileSha256(mod),
-                            confidence = 88,
-                            explanation = "Disallowed client mod detected in .minecraft/mods."
-                        });
-                    }
+                        moduleId = "game-directory",
+                        category = "Detection",
+                        severity = f.Severity,
+                        title = f.FindingName,
+                        description = f.Description,
+                        filePath = f.FilePath,
+                        fileHash = !string.IsNullOrEmpty(f.FilePath) && File.Exists(f.FilePath) ? ComputeFileSha256(f.FilePath) : "unreadable",
+                        artifactTimestamp = f.TimestampUtc,
+                        confidence = 88,
+                        explanation = $"Detected suspicious asset in {gr.GameName} directory."
+                    });
                 }
             }
-        }
-
-        // Check FiveM directory
-        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        string fivemDir = Path.Combine(localAppData, "FiveM", "FiveM.app");
-
-        if (Directory.Exists(fivemDir))
-        {
-            foundAnyGame = true;
-            string pluginsDir = Path.Combine(fivemDir, "plugins");
-            if (Directory.Exists(pluginsDir))
-            {
-                var dlls = Directory.GetFiles(pluginsDir, "*.dll");
-                foreach (var dll in dlls)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    string dllName = Path.GetFileName(dll);
-                    if (dllName.Contains("cheat", StringComparison.OrdinalIgnoreCase) ||
-                        dllName.Contains("menu", StringComparison.OrdinalIgnoreCase) ||
-                        dllName.Contains("hook", StringComparison.OrdinalIgnoreCase))
-                    {
-                        findings++;
-                        await _api.SubmitFindingAsync(new
-                        {
-                            moduleId = "game-directory",
-                            category = "Detection",
-                            severity = "Critical",
-                            title = $"Unverified DLL in FiveM Plugins: {dllName}",
-                            description = $"Plugin file '{dll}' flagged as potential executor/menu hook.",
-                            filePath = dll,
-                            fileHash = ComputeFileSha256(dll),
-                            confidence = 85,
-                            explanation = "Third-party DLL present in FiveM application plugins directory."
-                        });
-                    }
-                }
-            }
-        }
-
-        if (!foundAnyGame)
-        {
-            return new ModuleRunResult(true, "Completed", 0, "No supported game directory found in default locations.");
         }
 
         return new ModuleRunResult(true, "Completed", findings);
@@ -306,55 +269,26 @@ public class ScanEngine
     private async Task<ModuleRunResult> AnalyzeGameLogsAsync(CancellationToken ct)
     {
         int findings = 0;
-        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string mcLogsDir = Path.Combine(appData, ".minecraft", "logs");
 
-        if (Directory.Exists(mcLogsDir))
+        foreach (var gr in _collectedGameResults)
         {
-            string latestLog = Path.Combine(mcLogsDir, "latest.log");
-            if (File.Exists(latestLog))
+            foreach (var f in gr.Findings)
             {
-                try
+                if (f.ArtifactType is "Log" or "JavaAgent")
                 {
-                    using var stream = new FileStream(latestLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    using var reader = new StreamReader(stream);
-                    string? line;
-                    int lineNum = 0;
-
-                    var suspiciousPatterns = new[]
+                    findings++;
+                    await _api.SubmitFindingAsync(new
                     {
-                        new Regex(@"javaagent:(.*\.jar)", RegexOptions.IgnoreCase),
-                        new Regex(@"(wurst|liquidbounce|meteor|sigma|baritone)", RegexOptions.IgnoreCase),
-                        new Regex(@"injection|injected|hooking", RegexOptions.IgnoreCase)
-                    };
-
-                    while ((line = await reader.ReadLineAsync(ct)) != null && lineNum < 5000)
-                    {
-                        lineNum++;
-                        foreach (var pattern in suspiciousPatterns)
-                        {
-                            if (pattern.IsMatch(line))
-                            {
-                                findings++;
-                                await _api.SubmitFindingAsync(new
-                                {
-                                    moduleId = "game-log-analyzer",
-                                    category = "Suspicious",
-                                    severity = "Warning",
-                                    title = $"Cheat Indicator in Game Log (Line {lineNum})",
-                                    description = $"Log entry matches indicator: {line.Trim()}",
-                                    filePath = latestLog,
-                                    confidence = 80,
-                                    explanation = "Log entry indicates modification, injection, or disallowed client activity."
-                                });
-                                break;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    return new ModuleRunResult(false, "Partial", findings, $"Error reading log: {ex.Message}");
+                        moduleId = "game-log-analyzer",
+                        category = f.Severity == "Critical" ? "Detection" : "Suspicious",
+                        severity = f.Severity,
+                        title = f.FindingName,
+                        description = f.Description,
+                        filePath = f.FilePath,
+                        artifactTimestamp = f.TimestampUtc,
+                        confidence = 85,
+                        explanation = $"Historical game log analysis for {gr.GameName}."
+                    });
                 }
             }
         }
@@ -367,34 +301,40 @@ public class ScanEngine
     private async Task<ModuleRunResult> ScanFileSystemAsync(CancellationToken ct)
     {
         int findings = 0;
-        var targetDirs = new[]
+
+        var targetRoots = new List<string>
         {
             Path.GetTempPath(),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Desktop")
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Desktop"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp")
         };
 
-        var suspiciousNames = new[] { "cheat", "hack", "injector", "aimbot", "esp", "spoofer", "bypass", "clicker" };
-
-        foreach (var dir in targetDirs)
+        var options = new ForensicFileInventoryOptions
         {
-            ct.ThrowIfCancellationRequested();
-            if (!Directory.Exists(dir)) continue;
+            MaxFilesToScan = 3000,
+            MaxDirectoryDepth = 5
+        };
 
-            try
+        var fileEngine = new ForensicFileInventoryEngine(options);
+        var discoveredRecords = await fileEngine.ScanDirectoriesAsync(targetRoots, null, ct);
+
+        foreach (var record in discoveredRecords)
+        {
+            _collectedFiles.Add(record);
+
+            // 1. Check for suspicious path and suspicious name
+            if (record.IsSuspiciousPath && (record.Extension is ".exe" or ".dll" or ".sys"))
             {
-                var files = Directory.GetFiles(dir, "*.*", SearchOption.TopDirectoryOnly)
-                    .Where(f => f.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
-                                f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
-                                f.EndsWith(".sys", StringComparison.OrdinalIgnoreCase) ||
-                                f.EndsWith(".bat", StringComparison.OrdinalIgnoreCase));
+                string lower = record.FileName.ToLowerInvariant();
+                bool nameSuspicious = lower.Contains("cheat") || lower.Contains("inject") ||
+                                      lower.Contains("clicker") || lower.Contains("vape") ||
+                                      lower.Contains("bypass") || lower.Contains("spoofer");
 
-                foreach (var file in files)
+                // Check digital signature
+                if (!record.Signature.IsSigned || !record.Signature.IsTrustedVendor)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    string fileName = Path.GetFileName(file);
-
-                    if (suspiciousNames.Any(s => fileName.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                    if (nameSuspicious)
                     {
                         findings++;
                         await _api.SubmitFindingAsync(new
@@ -402,20 +342,44 @@ public class ScanEngine
                             moduleId = "file-system-scanner",
                             category = "Detection",
                             severity = "Critical",
-                            title = $"Suspicious Executable Found in User Directory: {fileName}",
-                            description = $"File '{file}' matches cheat utility nomenclature.",
-                            filePath = file,
-                            fileHash = ComputeFileSha256(file),
-                            artifactTimestamp = File.GetLastWriteTimeUtc(file),
-                            confidence = 85,
-                            explanation = "Binary located in user storage matching game manipulation naming."
+                            title = $"Unsigned Suspicious Executable in User Storage: {record.FileName}",
+                            description = $"File '{record.FullPath}' ({record.FileSizeBytes:N0} bytes) matches cheat naming without trusted signature.",
+                            filePath = record.FullPath,
+                            fileHash = record.Sha256Hash,
+                            artifactTimestamp = record.LastWriteTimeUtc,
+                            confidence = 88,
+                            explanation = "Executable located in user directory matches known game manipulation nomenclature."
                         });
                     }
                 }
             }
-            catch
+
+            // 2. Scan file buffer with Signature Engine
+            if (record.FileSizeBytes > 0 && record.FileSizeBytes < 10 * 1024 * 1024)
             {
-                // Ignore permission errors in specific subdirectories
+                try
+                {
+                    var sigMatches = await _signatureEngine.ScanFileAsync(record.FullPath, ct);
+                    foreach (var sm in sigMatches)
+                    {
+                        _collectedSignatureMatches.Add(sm);
+                        findings++;
+                        await _api.SubmitFindingAsync(new
+                        {
+                            moduleId = "file-system-scanner",
+                            category = "Detection",
+                            severity = sm.Severity,
+                            title = $"Signature Match: {sm.RuleName} in {record.FileName}",
+                            description = $"{sm.Description} [{sm.MatchedPattern}]",
+                            filePath = record.FullPath,
+                            fileHash = record.Sha256Hash,
+                            artifactTimestamp = record.LastWriteTimeUtc,
+                            confidence = 90,
+                            explanation = $"Static binary signature rule '{sm.RuleId}' matched file content."
+                        });
+                    }
+                }
+                catch { }
             }
         }
 
@@ -428,40 +392,107 @@ public class ScanEngine
     {
         int findings = 0;
 
-        // Inspect UserAssist in HKCU
-        string userAssistKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist";
-        using var rootKey = Registry.CurrentUser.OpenSubKey(userAssistKey);
-        if (rootKey != null)
+        // 1. Scan Prefetch
+        try
         {
-            foreach (var subKeyName in rootKey.GetSubKeyNames())
+            var pfEntries = PrefetchParser.ScanDirectory().ToList();
+            _collectedPrefetch.AddRange(pfEntries);
+
+            foreach (var pf in pfEntries)
             {
                 ct.ThrowIfCancellationRequested();
-                using var ceKey = rootKey.OpenSubKey($@"{subKeyName}\Count");
-                if (ceKey == null) continue;
-
-                foreach (var valName in ceKey.GetValueNames())
+                if (pf.SuspiciousLocation || pf.SuspiciousReferencedFiles.Count > 0)
                 {
-                    string decoded = Rot13(valName);
-                    if (decoded.Contains("cheat", StringComparison.OrdinalIgnoreCase) ||
-                        decoded.Contains("injector", StringComparison.OrdinalIgnoreCase) ||
-                        decoded.Contains("clicker", StringComparison.OrdinalIgnoreCase))
+                    findings++;
+                    await _api.SubmitFindingAsync(new
                     {
-                        findings++;
-                        await _api.SubmitFindingAsync(new
-                        {
-                            moduleId = "forensic-artifacts",
-                            category = "Detection",
-                            severity = "Critical",
-                            title = $"UserAssist Execution Artifact Found: {Path.GetFileName(decoded)}",
-                            description = $"Registry execution record proves past execution of: {decoded}",
-                            filePath = decoded,
-                            confidence = 90,
-                            explanation = "Windows UserAssist maintains encrypted ROT13 history of GUI program launches."
-                        });
-                    }
+                        moduleId = "forensic-artifacts",
+                        category = "Detection",
+                        severity = "High",
+                        title = $"Prefetch Execution Trace: {pf.ExecutableName}",
+                        description = $"Prefetch records execution from/loading suspicious paths. Run count: {pf.RunCount}. Last run: {(pf.LastExecutionTimes.Count > 0 ? pf.LastExecutionTimes[0].ToString("u") : "unknown")}",
+                        filePath = pf.SourceFilePath,
+                        artifactTimestamp = pf.LastExecutionTimes.FirstOrDefault(),
+                        confidence = 88,
+                        explanation = $"Referenced files: {string.Join("; ", pf.SuspiciousReferencedFiles.Take(3))}"
+                    });
                 }
             }
         }
+        catch { }
+
+        // 2. Scan Shimcache
+        try
+        {
+            var shimEntries = ShimcacheParser.ReadFromLiveRegistry();
+            _collectedShimcache.AddRange(shimEntries);
+
+            foreach (var sh in shimEntries.Where(s => s.IsSuspicious))
+            {
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "forensic-artifacts",
+                    category = "Suspicious",
+                    severity = "High",
+                    title = $"AppCompatCache Execution Record: {Path.GetFileName(sh.Path)}",
+                    description = $"Shimcache entry for '{sh.Path}' (Executed: {sh.Executed})",
+                    filePath = sh.Path,
+                    artifactTimestamp = sh.LastModifiedUtc,
+                    confidence = 82,
+                    explanation = "Windows AppCompatCache records historical executables evaluated for compatibility."
+                });
+            }
+        }
+        catch { }
+
+        // 3. Scan BAM / DAM
+        try
+        {
+            var bamEntries = BamDamParser.ReadFromLiveRegistry();
+            _collectedBam.AddRange(bamEntries);
+
+            foreach (var b in bamEntries.Where(b => b.IsSuspicious))
+            {
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "forensic-artifacts",
+                    category = "Detection",
+                    severity = "High",
+                    title = $"BAM/DAM Background Activity Record: {Path.GetFileName(b.NormalizedPath)}",
+                    description = $"Windows {b.SourceService} confirmed past execution: '{b.NormalizedPath}'",
+                    filePath = b.NormalizedPath,
+                    artifactTimestamp = b.LastExecutionUtc,
+                    confidence = 85,
+                    explanation = $"Background Activity Moderator tracked executable under SID {b.UserSid}."
+                });
+            }
+        }
+        catch { }
+
+        // 4. Scan Jump Lists
+        try
+        {
+            var jumpEntries = JumpListParser.ScanRecentDestinations();
+            foreach (var jl in jumpEntries.Where(j => j.IsSuspicious))
+            {
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "forensic-artifacts",
+                    category = "Suspicious",
+                    severity = "Warning",
+                    title = $"Jump List Recent Shortcut: {Path.GetFileName(jl.TargetPath)}",
+                    description = $"Recent taskbar / shell destination references: '{jl.TargetPath}'",
+                    filePath = jl.TargetPath,
+                    artifactTimestamp = jl.TargetModifiedUtc,
+                    confidence = 78,
+                    explanation = "Jump List stores user application launches and accessed files."
+                });
+            }
+        }
+        catch { }
 
         return new ModuleRunResult(true, "Completed", findings);
     }
@@ -571,8 +602,6 @@ public class ScanEngine
                 ct.ThrowIfCancellationRequested();
                 var entry = log.Entries[i];
 
-                // Event ID 1102: The audit log was cleared
-                // Event ID 104: The system log was cleared
                 if (entry.InstanceId == 1102 || entry.InstanceId == 104)
                 {
                     findings++;
@@ -588,7 +617,6 @@ public class ScanEngine
                         explanation = "Log clearing is an anti-forensic action often performed after cheat execution."
                     });
                 }
-                // Event ID 7045: A service was installed in the system
                 else if (entry.InstanceId == 7045 && entry.Message.Contains(".sys", StringComparison.OrdinalIgnoreCase))
                 {
                     if (entry.Message.Contains("capcom", StringComparison.OrdinalIgnoreCase) ||
@@ -624,7 +652,54 @@ public class ScanEngine
     {
         int findings = 0;
 
-        // Inspect User's Recycle Bin folder directly
+        // 1. Scan NTFS USN Change Journal
+        try
+        {
+            var usnResult = UsnJournalReader.ScanLiveVolumeJournal("C:", 10000);
+            _collectedUsnResult = usnResult;
+
+            if (usnResult.VolumeJournalAccessible)
+            {
+                // Report rename-before-delete sequences
+                foreach (var rbd in usnResult.RenamedBeforeDelete.Where(r => r.IsFileDelete))
+                {
+                    findings++;
+                    await _api.SubmitFindingAsync(new
+                    {
+                        moduleId = "file-deletion",
+                        category = "Detection",
+                        severity = "Critical",
+                        title = $"Renamed and Deleted Binary in USN Journal: {rbd.FileName}",
+                        description = $"File was renamed before deletion in NTFS USN Change Journal (FRN: {rbd.FileReferenceNumber})",
+                        filePath = rbd.FileName,
+                        artifactTimestamp = rbd.TimestampUtc,
+                        confidence = 92,
+                        explanation = "Anti-forensic pattern: binary renamed prior to deletion to evade static inspection."
+                    });
+                }
+
+                // Report suspicious deletions
+                foreach (var suspDel in usnResult.SuspiciousGameDeletions.Take(10))
+                {
+                    findings++;
+                    await _api.SubmitFindingAsync(new
+                    {
+                        moduleId = "file-deletion",
+                        category = "Suspicious",
+                        severity = "High",
+                        title = $"Recently Deleted Executable in USN Journal: {suspDel.FileName}",
+                        description = $"NTFS Journal recorded deletion at {suspDel.TimestampUtc:u}",
+                        filePath = suspDel.FileName,
+                        artifactTimestamp = suspDel.TimestampUtc,
+                        confidence = 80,
+                        explanation = "Recently deleted executable or DLL detected via NTFS USN Journal."
+                    });
+                }
+            }
+        }
+        catch { }
+
+        // 2. Scan Recycle Bin
         string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string driveLetter = Path.GetPathRoot(userProfile) ?? "C:\\";
         string recyclePath = Path.Combine(driveLetter, "$Recycle.Bin");
@@ -638,46 +713,39 @@ public class ScanEngine
                 {
                     ct.ThrowIfCancellationRequested();
                     string fileName = Path.GetFileName(file);
-                    if (fileName.StartsWith("$R", StringComparison.OrdinalIgnoreCase))
+                    if (fileName.StartsWith("$R", StringComparison.OrdinalIgnoreCase) &&
+                        (fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
                     {
-                        // Check if file is executable or DLL
-                        if (fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
-                            fileName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                        findings++;
+                        await _api.SubmitFindingAsync(new
                         {
-                            findings++;
-                            await _api.SubmitFindingAsync(new
-                            {
-                                moduleId = "file-deletion",
-                                category = "Suspicious",
-                                severity = "Warning",
-                                title = $"Deleted Executable In Recycle Bin: {fileName}",
-                                description = $"Deleted binary retained in Recycle Bin: '{file}'",
-                                filePath = file,
-                                fileHash = ComputeFileSha256(file),
-                                artifactTimestamp = File.GetLastWriteTimeUtc(file),
-                                confidence = 75,
-                                explanation = "Deleted executable file trace found in Recycle Bin metadata."
-                            });
-                        }
+                            moduleId = "file-deletion",
+                            category = "Suspicious",
+                            severity = "Warning",
+                            title = $"Deleted Executable In Recycle Bin: {fileName}",
+                            description = $"Deleted binary retained in Recycle Bin: '{file}'",
+                            filePath = file,
+                            fileHash = ComputeFileSha256(file),
+                            artifactTimestamp = File.GetLastWriteTimeUtc(file),
+                            confidence = 75,
+                            explanation = "Deleted executable file trace found in Recycle Bin metadata."
+                        });
                     }
                 }
             }
-            catch
-            {
-                // Recycle bin can have restricted subfolders
-            }
+            catch { }
         }
 
         return new ModuleRunResult(true, "Completed", findings);
     }
     #endregion
 
-    #region Module 12: Anti-Forensic Scanner
+    #region Module 12: Anti-Forensic Scanner & Evidence Correlation
     private async Task<ModuleRunResult> ScanAntiForensicAsync(CancellationToken ct)
     {
         int findings = 0;
 
-        // Check if Prefetch is disabled in Registry
+        // 1. Check if Prefetch is disabled in Registry
         string sessionManager = @"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters";
         using (var key = Registry.LocalMachine.OpenSubKey(sessionManager))
         {
@@ -701,8 +769,60 @@ public class ScanEngine
             }
         }
 
-        // Check USN journal status
-        // If USN Journal was wiped or truncated recently
+        // 2. Timestomp detection on collected files
+        foreach (var file in _collectedFiles.Where(f => f.IsSuspiciousPath).Take(50))
+        {
+            ct.ThrowIfCancellationRequested();
+            var ts = TimestompDetector.AnalyzeFile(file.FullPath);
+            if (ts.TimestompDetected)
+            {
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "anti-forensic",
+                    category = "Integrity",
+                    severity = "Critical",
+                    title = $"Timestomped File Detected: {file.FileName}",
+                    description = ts.DetectionReason,
+                    filePath = file.FullPath,
+                    artifactTimestamp = ts.CreationTimeUtc,
+                    confidence = 90,
+                    explanation = "Programmatic timestamp modification identified, indicating intent to disguise file history."
+                });
+            }
+        }
+
+        // 3. Evidence Correlation: Correlate all discovered artifacts across all modules!
+        try
+        {
+            var correlationReport = EvidenceCorrelationEngine.Correlate(
+                _collectedFiles,
+                _collectedPrefetch,
+                _collectedBam,
+                _collectedShimcache,
+                _collectedUsnResult,
+                _collectedGameResults,
+                _collectedSignatureMatches);
+
+            foreach (var incident in correlationReport.Incidents)
+            {
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "anti-forensic",
+                    category = "Detection",
+                    severity = incident.ConfidenceScore,
+                    title = $"Correlated Incident: {incident.PrimaryExecutable} ({incident.ConfidenceScore} Confidence)",
+                    description = $"{incident.Summary} Events: {incident.TimelineEvents.Count}",
+                    filePath = incident.TimelineEvents.FirstOrDefault(e => !string.IsNullOrEmpty(e.FilePath))?.FilePath ?? incident.PrimaryExecutable,
+                    artifactTimestamp = incident.TimelineEvents.FirstOrDefault()?.TimestampUtc,
+                    confidence = incident.ConfidencePercent,
+                    explanation = $"Corroborated across forensic layers: {string.Join(", ", incident.CorroboratingSources)}"
+                });
+            }
+        }
+        catch { }
+
         return new ModuleRunResult(true, "Completed", findings);
     }
     #endregion
@@ -721,27 +841,6 @@ public class ScanEngine
         {
             return "hash_unavailable";
         }
-    }
-
-    private static string Rot13(string input)
-    {
-        var array = input.ToCharArray();
-        for (int i = 0; i < array.Length; i++)
-        {
-            int number = array[i];
-            if (number is >= 'a' and <= 'z')
-            {
-                if (number > 'm') number -= 13;
-                else number += 13;
-            }
-            else if (number is >= 'A' and <= 'Z')
-            {
-                if (number > 'M') number -= 13;
-                else number += 13;
-            }
-            array[i] = (char)number;
-        }
-        return new string(array);
     }
     #endregion
 }

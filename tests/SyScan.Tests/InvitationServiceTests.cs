@@ -153,3 +153,4 @@ public class TestScanEventBroadcaster : IScanEventBroadcaster
     public Task BroadcastModuleProgressAsync(string scanId, string moduleId, string status, int progressPercent) => Task.CompletedTask;
     public Task BroadcastStatusChangeAsync(string scanId, ScanStatus newStatus) => Task.CompletedTask;
 }
+
