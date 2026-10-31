@@ -1,0 +1,21 @@
+## Visual Studio & .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+## Next.js & Node
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+## Environment and Secrets
+*.env*.local
+.env
+appsettings.Production.json

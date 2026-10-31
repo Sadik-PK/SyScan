@@ -1,0 +1,115 @@
+<UserControl x:Class="SyScan.Desktop.Views.ConsentView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource BackgroundBrush}">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="48,40,48,40" MaxWidth="580">
+            <StackPanel>
+
+                <!-- Header -->
+                <TextBlock Text="Review Scan Request"
+                           Style="{StaticResource HeadingLargeStyle}"
+                           Margin="0,0,0,4"/>
+                <TextBlock Text="Please read the details below carefully before approving."
+                           Style="{StaticResource SubtitleStyle}"
+                           Margin="0,0,0,32"/>
+
+                <!-- Scan identity card -->
+                <Border Style="{StaticResource CardPanelStyle}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="SCAN DETAILS" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="140"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Text="Scan ID" Style="{StaticResource SubtitleStyle}" Margin="0,0,0,8"/>
+                            <TextBlock x:Name="ScanIdLabel" Grid.Column="1" Style="{StaticResource MonoStyle}" Margin="0,0,0,8"/>
+
+                            <TextBlock Text="Organization" Grid.Row="1" Style="{StaticResource SubtitleStyle}" Margin="0,0,0,8"/>
+                            <TextBlock x:Name="OrgLabel" Grid.Row="1" Grid.Column="1" Style="{StaticResource BodyStyle}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+
+                            <TextBlock Text="Game" Grid.Row="2" Style="{StaticResource SubtitleStyle}" Margin="0,0,0,8"/>
+                            <TextBlock x:Name="GameLabel" Grid.Row="2" Grid.Column="1" Style="{StaticResource BodyStyle}" Margin="0,0,0,8"/>
+
+                            <TextBlock Text="Your label" Grid.Row="3" Style="{StaticResource SubtitleStyle}"/>
+                            <TextBlock x:Name="ParticipantLabel" Grid.Row="3" Grid.Column="1" Style="{StaticResource BodyStyle}"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Requested modules card -->
+                <Border Style="{StaticResource CardPanelStyle}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="SCAN MODULES REQUESTED" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
+                        <ItemsControl x:Name="ModulesList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                        <Border Width="8" Height="8" CornerRadius="4"
+                                                Background="{StaticResource AccentBrush}"
+                                                VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                        <TextBlock Text="{Binding}"
+                                                   Foreground="{StaticResource TextPrimaryBrush}"
+                                                   FontSize="14"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- Privacy card -->
+                <Border Style="{StaticResource CardPanelStyle}" Margin="0,0,0,24">
+                    <StackPanel>
+                        <TextBlock Text="WHAT WILL BE COLLECTED" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
+                        <TextBlock TextWrapping="Wrap" Style="{StaticResource BodyStyle}" Margin="0,0,0,12">
+                            SyScan will collect forensic data from your Windows system based on the modules listed above.
+                            This may include running processes, game files, system logs, Windows registry entries,
+                            and file system activity records.
+                        </TextBlock>
+                        <TextBlock TextWrapping="Wrap" Style="{StaticResource SubtitleStyle}" FontSize="12">
+                            All data is transmitted securely to the requesting organization and stored according to their retention policy.
+                            You can decline this scan at any time before collection begins.
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <!-- Warning notice -->
+                <Border Background="#1A2A1A" BorderBrush="{StaticResource SuccessBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,24">
+                    <TextBlock TextWrapping="Wrap" FontSize="13"
+                               Foreground="{StaticResource SuccessBrush}">
+                        ⚡ This scan will only proceed with your explicit approval below. You may decline without penalty.
+                    </TextBlock>
+                </Border>
+
+                <!-- Actions -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Decline Scan"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Click="DeclineButton_Click"
+                            Margin="0,0,12,0"/>
+                    <Button Content="Approve &amp; Start Scan"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Click="ApproveButton_Click"
+                            x:Name="ApproveButton"/>
+                </StackPanel>
+
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</UserControl>
+

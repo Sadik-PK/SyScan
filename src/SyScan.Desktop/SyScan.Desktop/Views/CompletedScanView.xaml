@@ -1,0 +1,70 @@
+<UserControl x:Class="SyScan.Desktop.Views.CompletedScanView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource BackgroundBrush}">
+
+    <Grid VerticalAlignment="Center" HorizontalAlignment="Center" Width="480">
+        <StackPanel>
+            <!-- Check icon -->
+            <Border Width="72" Height="72" CornerRadius="36" HorizontalAlignment="Center" Margin="0,0,0,24">
+                <Border.Background>
+                    <SolidColorBrush Color="#1A3A2A"/>
+                </Border.Background>
+                <TextBlock Text="✓" FontSize="36" Foreground="#4CAF82"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+
+            <TextBlock Text="Scan Complete"
+                       Style="{StaticResource HeadingLargeStyle}"
+                       HorizontalAlignment="Center"
+                       Margin="0,0,0,8"/>
+
+            <TextBlock Text="Your forensic scan has been completed and submitted."
+                       Style="{StaticResource SubtitleStyle}"
+                       HorizontalAlignment="Center"
+                       Margin="0,0,0,32"/>
+
+            <Border Style="{StaticResource CardPanelStyle}" Margin="0,0,0,24">
+                <StackPanel>
+                    <Grid Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock x:Name="FindingsCountText" FontSize="32" FontWeight="Bold"
+                                       Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Findings" Style="{StaticResource SubtitleStyle}" HorizontalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                            <TextBlock x:Name="CompletedText" FontSize="32" FontWeight="Bold"
+                                       Foreground="{StaticResource SuccessBrush}" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Modules Done" Style="{StaticResource SubtitleStyle}" HorizontalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2" HorizontalAlignment="Center">
+                            <TextBlock x:Name="FailedText" FontSize="32" FontWeight="Bold"
+                                       Foreground="{StaticResource WarningBrush}" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Unavailable" Style="{StaticResource SubtitleStyle}" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Text="The administrator will review the results and contact you with any findings."
+                               Style="{StaticResource SubtitleStyle}"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center"
+                               FontSize="12"/>
+                </StackPanel>
+            </Border>
+
+            <Button Content="Close SyScan"
+                    Style="{StaticResource SecondaryButtonStyle}"
+                    HorizontalAlignment="Center"
+                    Click="CloseButton_Click"/>
+        </StackPanel>
+    </Grid>
+</UserControl>
+

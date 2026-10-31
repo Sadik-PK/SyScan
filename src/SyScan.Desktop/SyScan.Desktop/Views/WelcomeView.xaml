@@ -1,0 +1,75 @@
+<UserControl x:Class="SyScan.Desktop.Views.WelcomeView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource BackgroundBrush}">
+
+    <Grid>
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="420">
+
+            <!-- Logo area -->
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,8">
+                <Border Width="44" Height="44" CornerRadius="10" Margin="0,0,12,0">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                            <GradientStop Color="#4F8EF7" Offset="0"/>
+                            <GradientStop Color="#8B5CF6" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <TextBlock Text="S" FontSize="24" FontWeight="Bold"
+                               Foreground="White"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock Text="SyScan" FontSize="32" FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <TextBlock Text="Forensic Investigation Platform"
+                       Style="{StaticResource SubtitleStyle}"
+                       HorizontalAlignment="Center"
+                       Margin="0,0,0,40"/>
+
+            <!-- Invitation entry card -->
+            <Border Style="{StaticResource CardPanelStyle}">
+                <StackPanel>
+                    <TextBlock Text="Enter Scan Invitation"
+                               Style="{StaticResource HeadingStyle}"
+                               Margin="0,0,0,8"/>
+                    <TextBlock Text="Paste the invitation token or URL provided by your administrator."
+                               Style="{StaticResource SubtitleStyle}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,20"/>
+
+                    <TextBlock Text="INVITATION TOKEN" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               Margin="0,0,0,6"/>
+
+                    <TextBox x:Name="TokenInput"
+                             Style="{StaticResource SyScanTextBoxStyle}"
+                             Margin="0,0,0,20"
+                             KeyDown="TokenInput_KeyDown"/>
+
+                    <TextBlock x:Name="ErrorText"
+                               Foreground="{StaticResource DangerBrush}"
+                               FontSize="13"
+                               Visibility="Collapsed"
+                               Margin="0,0,0,12"
+                               TextWrapping="Wrap"/>
+
+                    <Button Content="Verify Invitation →"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Click="VerifyButton_Click"
+                            x:Name="VerifyButton"/>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Text="The administrator shares a unique invitation for each scan. Your computer will not be scanned without your explicit consent."
+                       Style="{StaticResource SubtitleStyle}"
+                       TextWrapping="Wrap"
+                       TextAlignment="Center"
+                       Margin="0,20,0,0"
+                       FontSize="12"/>
+        </StackPanel>
+    </Grid>
+</UserControl>
+

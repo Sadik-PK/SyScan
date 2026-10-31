@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/SyScan.Backend/">
+    <Project Path="src/SyScan.Backend/SyScan.Api/SyScan.Api.csproj" />
+    <Project Path="src/SyScan.Backend/SyScan.Core/SyScan.Core.csproj" />
+    <Project Path="src/SyScan.Backend/SyScan.Infrastructure/SyScan.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/SyScan.Desktop/">
+    <Project Path="src/SyScan.Desktop/SyScan.Desktop/SyScan.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SyScan.Tests/SyScan.Tests.csproj" />
+  </Folder>
+</Solution>
