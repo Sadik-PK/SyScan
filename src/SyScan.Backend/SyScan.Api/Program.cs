@@ -125,7 +125,13 @@ if (app.Environment.IsDevelopment())
         var db = scope.ServiceProvider.GetRequiredService<SyScanDbContext>();
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
 
-        if (await db.Database.CanConnectAsync())
+        if (dbProvider.Equals("InMemory", StringComparison.OrdinalIgnoreCase))
+        {
+            await db.Database.EnsureCreatedAsync();
+            await DbSeeder.SeedAsync(db, logger);
+            logger.LogInformation("In-memory database initialized and seeded.");
+        }
+        else if (await db.Database.CanConnectAsync())
         {
             await db.Database.MigrateAsync();
             await DbSeeder.SeedAsync(db, logger);
@@ -137,7 +143,7 @@ if (app.Environment.IsDevelopment())
     }
     catch (Exception ex)
     {
-        app.Logger.LogWarning(ex, "Database initialization warning: PostgreSQL may not be running.");
+        app.Logger.LogWarning(ex, "Database initialization warning.");
     }
 }
 
