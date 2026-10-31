@@ -1,4 +1,8 @@
+using System;
+using System.Diagnostics;
+using System.IO;
 using System.Windows;
+using Microsoft.Win32;
 using SyScan.Desktop.Services;
 
 namespace SyScan.Desktop;
@@ -12,8 +16,12 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        Api = new ApiClient("https://localhost:7001");
+        string apiUrl = Environment.GetEnvironmentVariable("SYSCAN_API_URL") ?? "http://localhost:5000";
+        Api = new ApiClient(apiUrl);
         ScanSession = new ScanSessionService(Api);
+
+        // Register syscan:// URI scheme in HKCU for seamless browser launching
+        RegisterUriScheme();
 
         // Check for invitation token passed via command-line or custom URI scheme
         string? token = null;
@@ -24,11 +32,39 @@ public partial class App : Application
         mainWindow.Show();
     }
 
+    private static void RegisterUriScheme()
+    {
+        try
+        {
+            string exePath = Process.GetCurrentProcess().MainModule?.FileName ??
+                             Path.Combine(AppContext.BaseDirectory, "SyScan.exe");
+
+            using var key = Registry.CurrentUser.CreateSubKey(@"Software\Classes\syscan");
+            if (key != null)
+            {
+                key.SetValue("", "URL:SyScan Protocol");
+                key.SetValue("URL Protocol", "");
+
+                using var cmdKey = key.CreateSubKey(@"shell\open\command");
+                if (cmdKey != null)
+                {
+                    cmdKey.SetValue("", $"\"{exePath}\" \"%1\"");
+                }
+            }
+        }
+        catch
+        {
+            // Non-critical if user environment prevents HKCU write
+        }
+    }
+
     private static string? ExtractToken(string arg)
     {
-        // Support: syscan://invite/TOKEN or just the raw TOKEN
+        // Support: syscan://invite/TOKEN or syscan://invite?token=TOKEN
         if (arg.StartsWith("syscan://invite/", StringComparison.OrdinalIgnoreCase))
-            return arg["syscan://invite/".Length..];
+            return arg["syscan://invite/".Length..].TrimEnd('/');
+        if (arg.StartsWith("syscan://invite?token=", StringComparison.OrdinalIgnoreCase))
+            return arg["syscan://invite?token=".Length..].TrimEnd('/');
         if (arg.StartsWith("--invite=", StringComparison.OrdinalIgnoreCase))
             return arg["--invite=".Length..];
         // Raw token

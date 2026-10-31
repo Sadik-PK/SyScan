@@ -14,7 +14,9 @@ import {
   User,
   AlertCircle,
   ExternalLink,
-  Layers
+  Layers,
+  Sparkles,
+  ArrowDownToLine
 } from 'lucide-react';
 
 function ParticipantInviteContent() {
@@ -25,6 +27,7 @@ function ParticipantInviteContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [downloadStarted, setDownloadStarted] = useState(false);
 
   useEffect(() => {
     const checkToken = async () => {
@@ -49,7 +52,24 @@ function ParticipantInviteContent() {
   const copyToken = () => {
     navigator.clipboard.writeText(token);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleDownloadApp = () => {
+    // 1. Copy token to clipboard automatically
+    copyToken();
+    setDownloadStarted(true);
+
+    // 2. Trigger browser download of SyScan.exe
+    const link = document.createElement('a');
+    link.href = '/downloads/SyScan.exe';
+    link.download = 'SyScan.exe';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // 3. Reset download state after 5 seconds
+    setTimeout(() => setDownloadStarted(false), 5000);
   };
 
   const openInApp = () => {
@@ -138,59 +158,83 @@ function ParticipantInviteContent() {
               </div>
             </div>
 
-            {/* Instructions Steps */}
+            {/* Primary Action: Download SyScan Desktop Linked With This Invite */}
             <div className="space-y-3">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 font-mono">
-                How to Complete This Scan
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 font-mono">
+                  Get Started With SyScan
+                </h3>
+                <span className="text-[11px] font-mono text-emerald-400 flex items-center space-x-1">
+                  <Sparkles className="w-3 h-3" />
+                  <span>Portable • No Installation</span>
+                </span>
+              </div>
 
-              <div className="space-y-2 text-xs text-slate-400">
-                <div className="flex items-start space-x-2.5">
-                  <div className="w-5 h-5 rounded-full bg-[#1c2436] text-blue-400 font-mono font-bold flex items-center justify-center shrink-0 text-[11px]">
-                    1
-                  </div>
-                  <p>
-                    Ensure <strong>SyScan Desktop</strong> is installed on your Windows PC.
-                  </p>
-                </div>
+              {/* Big Download Button */}
+              <button
+                onClick={handleDownloadApp}
+                className="w-full flex items-center justify-center space-x-2.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-400 text-white font-bold py-3.5 px-4 rounded-xl shadow-xl shadow-blue-600/30 transition-all text-sm group active:scale-[0.99]"
+              >
+                <ArrowDownToLine className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
+                <span>
+                  {downloadStarted ? 'Downloading SyScan.exe (Token Copied!)' : 'Download SyScan Desktop (.exe)'}
+                </span>
+              </button>
 
-                <div className="flex items-start space-x-2.5">
-                  <div className="w-5 h-5 rounded-full bg-[#1c2436] text-blue-400 font-mono font-bold flex items-center justify-center shrink-0 text-[11px]">
-                    2
-                  </div>
-                  <p>
-                    Click <strong>Open in SyScan Desktop</strong> below or paste the token into the app.
-                  </p>
+              {downloadStarted && (
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center space-x-2 animate-fadeIn">
+                  <Check className="w-4 h-4 shrink-0" />
+                  <span>Your download has started! The pairing token was automatically copied to your clipboard.</span>
                 </div>
+              )}
 
-                <div className="flex items-start space-x-2.5">
-                  <div className="w-5 h-5 rounded-full bg-[#1c2436] text-blue-400 font-mono font-bold flex items-center justify-center shrink-0 text-[11px]">
-                    3
-                  </div>
-                  <p>
-                    Review the requested modules and click <strong>Approve &amp; Start Scan</strong> to begin.
-                  </p>
-                </div>
+              {/* Secondary Actions: Open If Already Installed or Copy Token */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                <button
+                  onClick={openInApp}
+                  className="flex items-center justify-center space-x-1.5 bg-[#0b0e14] hover:bg-[#161d2b] text-slate-300 border border-[#232d42] font-semibold py-2.5 rounded-xl transition-all text-xs"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Open in Desktop App</span>
+                </button>
+
+                <button
+                  onClick={copyToken}
+                  className="flex items-center justify-center space-x-1.5 bg-[#0b0e14] hover:bg-[#161d2b] text-slate-300 border border-[#232d42] font-semibold py-2.5 rounded-xl transition-all text-xs"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Copied Token!' : 'Copy Token'}</span>
+                </button>
               </div>
             </div>
 
-            {/* Action Buttons */}
-            <div className="space-y-2 pt-2">
-              <button
-                onClick={openInApp}
-                className="w-full flex items-center justify-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 rounded-xl shadow-xl shadow-blue-500/25 transition-all text-sm"
-              >
-                <span>Open in SyScan Desktop</span>
-                <ExternalLink className="w-4 h-4" />
-              </button>
+            {/* Quick 3-Step Guide */}
+            <div className="p-4 rounded-xl bg-[#0b0e14] border border-[#232d42] space-y-2.5 text-xs text-slate-400">
+              <div className="text-[11px] font-mono uppercase tracking-wider text-slate-500 font-bold">
+                Quick Instructions
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-start space-x-2.5">
+                  <div className="w-4 h-4 rounded-full bg-blue-500/20 text-blue-400 font-mono font-bold flex items-center justify-center shrink-0 text-[10px] mt-0.5">
+                    1
+                  </div>
+                  <p>Click <strong className="text-slate-200">Download SyScan Desktop</strong> above to save the scanner executable.</p>
+                </div>
 
-              <button
-                onClick={copyToken}
-                className="w-full flex items-center justify-center space-x-2 bg-[#0b0e14] hover:bg-[#161d2b] text-slate-300 border border-[#232d42] font-semibold py-2.5 rounded-xl transition-all text-xs"
-              >
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copied ? 'Copied Invitation Token' : 'Copy Invitation Token'}</span>
-              </button>
+                <div className="flex items-start space-x-2.5">
+                  <div className="w-4 h-4 rounded-full bg-blue-500/20 text-blue-400 font-mono font-bold flex items-center justify-center shrink-0 text-[10px] mt-0.5">
+                    2
+                  </div>
+                  <p>Run <strong className="text-slate-200">SyScan.exe</strong> on your PC. It will automatically connect with this invitation.</p>
+                </div>
+
+                <div className="flex items-start space-x-2.5">
+                  <div className="w-4 h-4 rounded-full bg-blue-500/20 text-blue-400 font-mono font-bold flex items-center justify-center shrink-0 text-[10px] mt-0.5">
+                    3
+                  </div>
+                  <p>Review the requested scan scope and click <strong className="text-slate-200">Approve &amp; Start Scan</strong>.</p>
+                </div>
+              </div>
             </div>
 
             {/* Privacy Guarantee Note */}
