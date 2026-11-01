@@ -156,6 +156,56 @@ public class ScannerController : ControllerBase
         return Ok(new { findingId });
     }
 
+    /// <summary>Submit a batch of discovered file inventory records.</summary>
+    [HttpPost("inventory")]
+    public async Task<IActionResult> SubmitInventory([FromBody] SubmitInventoryBatchDto dto)
+    {
+        var scanSessionId = GetScanSessionId();
+        if (scanSessionId is null) return Unauthorized();
+
+        var scan = await _db.ScanSessions.FindAsync(scanSessionId);
+        if (scan is null) return NotFound();
+
+        var existingCount = await _db.FileInventory.CountAsync(i => i.ScanSessionId == scanSessionId);
+
+        var entities = new List<FileInventoryItem>();
+        for (int i = 0; i < dto.Items.Count; i++)
+        {
+            var item = dto.Items[i];
+            entities.Add(new FileInventoryItem
+            {
+                ScanSessionId = scanSessionId.Value,
+                FileId = $"FIL-{existingCount + i + 1:D5}",
+                FileName = item.FileName,
+                FullPath = item.FullPath,
+                Extension = item.Extension,
+                ActualFileType = item.ActualFileType,
+                FileSizeBytes = item.FileSizeBytes,
+                Sha256Hash = item.Sha256Hash,
+                CreationTimeUtc = item.CreationTimeUtc,
+                LastWriteTimeUtc = item.LastWriteTimeUtc,
+                LastAccessTimeUtc = item.LastAccessTimeUtc,
+                DigitalSignatureState = item.DigitalSignatureState,
+                Publisher = item.Publisher,
+                ProductName = item.ProductName,
+                ProductVersion = item.ProductVersion,
+                PeMetadataJson = item.PeMetadataJson,
+                JarMetadataJson = item.JarMetadataJson,
+                DiscoverySource = item.DiscoverySource,
+                AssociatedGame = item.AssociatedGame,
+                FileAnalysisStatus = item.FileAnalysisStatus,
+                DetectionStatus = item.DetectionStatus,
+                DiscoveryContext = item.DiscoveryContext,
+                DetectionNotes = item.DetectionNotes
+            });
+        }
+
+        _db.FileInventory.AddRange(entities);
+        await _db.SaveChangesAsync();
+
+        return Ok(new { ingestedCount = entities.Count });
+    }
+
     /// <summary>Report scan completion.</summary>
     [HttpPost("complete")]
     public async Task<IActionResult> CompleteScan([FromBody] CompleteScanDto dto)
@@ -170,8 +220,11 @@ public class ScannerController : ControllerBase
         scan.ScanCompletedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
+        var totalInventoried = await _db.FileInventory.CountAsync(i => i.ScanSessionId == scanSessionId);
+        var totalSecurityFindings = await _db.ScanFindings.CountAsync(f => f.ScanSessionId == scanSessionId && f.Severity > FindingSeverity.Information);
+
         await _scanService.RecordScanEventAsync(scanSessionId.Value, ScanEventType.ScanCompleted,
-            $"Scan completed. Total findings: {dto.TotalFindings}");
+            $"Scan completed. Total executables & JARs inventoried: {totalInventoried}. Security findings: {totalSecurityFindings}.");
         await _broadcaster.BroadcastStatusChangeAsync(scan.ScanId, ScanStatus.Completed);
 
         return Ok();
@@ -204,5 +257,35 @@ public record SubmitFindingDto(
     string? Explanation = null,
     string? SupportingArtifacts = null);
 
-public record CompleteScanDto(int TotalFindings, string[] CompletedModules, string[] FailedModules);
+public record CompleteScanDto(
+    int TotalFindings,
+    string[] CompletedModules,
+    string[] FailedModules,
+    int TotalFilesDiscovered = 0,
+    int TotalFilesAnalyzed = 0);
+
+public record SubmitInventoryItemDto(
+    string FileName,
+    string FullPath,
+    string Extension,
+    string ActualFileType,
+    long FileSizeBytes,
+    string Sha256Hash,
+    DateTime CreationTimeUtc,
+    DateTime LastWriteTimeUtc,
+    DateTime? LastAccessTimeUtc,
+    string DigitalSignatureState,
+    string? Publisher,
+    string? ProductName,
+    string? ProductVersion,
+    string? PeMetadataJson,
+    string? JarMetadataJson,
+    string DiscoverySource,
+    string? AssociatedGame,
+    string FileAnalysisStatus,
+    string DetectionStatus,
+    string DiscoveryContext,
+    string? DetectionNotes);
+
+public record SubmitInventoryBatchDto(List<SubmitInventoryItemDto> Items);
 

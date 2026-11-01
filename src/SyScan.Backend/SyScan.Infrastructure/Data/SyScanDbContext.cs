@@ -16,6 +16,7 @@ public class SyScanDbContext : DbContext
     public DbSet<ScanEvent> ScanEvents => Set<ScanEvent>();
     public DbSet<ScanFinding> ScanFindings => Set<ScanFinding>();
     public DbSet<EvidenceRecord> EvidenceRecords => Set<EvidenceRecord>();
+    public DbSet<FileInventoryItem> FileInventory => Set<FileInventoryItem>();
     public DbSet<ConsentRecord> ConsentRecords => Set<ConsentRecord>();
     public DbSet<DetectionRule> DetectionRules => Set<DetectionRule>();
     public DbSet<DetectionRuleVersion> DetectionRuleVersions => Set<DetectionRuleVersion>();

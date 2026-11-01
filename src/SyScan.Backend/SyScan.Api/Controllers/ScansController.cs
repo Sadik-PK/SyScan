@@ -183,6 +183,17 @@ public class ScansController : ControllerBase
 
         var consentAt = scan.ConsentRecords.OrderByDescending(c => c.DecidedAt).FirstOrDefault()?.DecidedAt;
 
+        var inventoryItems = await _db.FileInventory.Where(i => i.ScanSessionId == scan.Id).ToListAsync();
+        var totalExe = inventoryItems.Count(i => i.Extension.Equals(".exe", StringComparison.OrdinalIgnoreCase));
+        var totalJar = inventoryItems.Count(i => i.Extension.Equals(".jar", StringComparison.OrdinalIgnoreCase));
+        var totalDll = inventoryItems.Count(i => i.Extension.Equals(".dll", StringComparison.OrdinalIgnoreCase));
+        var totalSys = inventoryItems.Count(i => i.Extension.Equals(".sys", StringComparison.OrdinalIgnoreCase));
+        var totalOther = inventoryItems.Count - (totalExe + totalJar + totalDll + totalSys);
+
+        var totalSigned = inventoryItems.Count(i => i.DigitalSignatureState.Contains("Signed", StringComparison.OrdinalIgnoreCase));
+        var totalUnsigned = inventoryItems.Count(i => i.DigitalSignatureState.Equals("Unsigned", StringComparison.OrdinalIgnoreCase));
+        var totalHashed = inventoryItems.Count(i => !string.IsNullOrEmpty(i.Sha256Hash) && i.Sha256Hash != "hash_unavailable" && i.Sha256Hash != "inaccessible");
+
         return Ok(new
         {
             scanId = scan.ScanId,
@@ -211,7 +222,23 @@ public class ScansController : ControllerBase
                 warning = warningFindings,
                 suspicious = suspiciousFindings,
                 informational = infoFindings,
-                clean = criticalFindings == 0 && warningFindings == 0 && suspiciousFindings == 0
+                clean = criticalFindings == 0 && warningFindings == 0 && suspiciousFindings == 0,
+                filesDiscovered = inventoryItems.Count,
+                filesAnalyzed = inventoryItems.Count(i => i.FileAnalysisStatus == "Analyzed"),
+                securityFindings = criticalFindings + warningFindings + suspiciousFindings
+            },
+            fileInventorySummary = new
+            {
+                totalDiscovered = inventoryItems.Count,
+                totalExe,
+                totalJar,
+                totalDll,
+                totalSys,
+                totalOther = Math.Max(0, totalOther),
+                totalSigned,
+                totalUnsigned,
+                totalHashed,
+                inaccessible = inventoryItems.Count(i => i.FileAnalysisStatus == "Inaccessible" || i.FileAnalysisStatus == "Locked")
             },
             findings = scan.Findings.OrderByDescending(f => f.Severity).Select(f => new
             {
@@ -233,9 +260,139 @@ public class ScansController : ControllerBase
                 e.Message,
                 e.ModuleId,
                 e.OccurredAt
+            }),
+            topInventory = inventoryItems.Take(100).Select(i => new
+            {
+                i.FileId,
+                i.FileName,
+                i.FullPath,
+                i.Extension,
+                i.ActualFileType,
+                i.FileSizeBytes,
+                i.Sha256Hash,
+                i.DigitalSignatureState,
+                i.Publisher,
+                i.AssociatedGame,
+                i.DetectionStatus,
+                i.DiscoverySource,
+                i.DiscoveryContext,
+                i.DetectionNotes,
+                i.LastWriteTimeUtc
             })
         });
     }
+
+    /// <summary>Get paginated file inventory for a scan.</summary>
+    [HttpGet("{scanId}/inventory")]
+    public async Task<IActionResult> GetScanInventory(
+        string scanId,
+        [FromQuery] string? extension = null,
+        [FromQuery] string? game = null,
+        [FromQuery] string? status = null,
+        [FromQuery] string? search = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        [FromQuery] string? format = null)
+    {
+        var orgId = await GetCurrentOrganizationIdAsync();
+        if (orgId is null) return Forbid();
+
+        var scan = await _db.ScanSessions.FirstOrDefaultAsync(s => s.ScanId == scanId && s.OrganizationId == orgId);
+        if (scan is null) return NotFound();
+
+        var query = _db.FileInventory.Where(i => i.ScanSessionId == scan.Id);
+
+        if (!string.IsNullOrWhiteSpace(extension))
+        {
+            var ext = extension.StartsWith('.') ? extension : "." + extension;
+            query = query.Where(i => i.Extension.ToLower() == ext.ToLower());
+        }
+
+        if (!string.IsNullOrWhiteSpace(game))
+        {
+            query = query.Where(i => i.AssociatedGame != null && i.AssociatedGame.ToLower() == game.ToLower());
+        }
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            query = query.Where(i => i.DetectionStatus.ToLower() == status.ToLower());
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var sLower = search.ToLower();
+            query = query.Where(i => i.FileName.ToLower().Contains(sLower) ||
+                                     i.FullPath.ToLower().Contains(sLower) ||
+                                     i.Sha256Hash.ToLower().Contains(sLower) ||
+                                     (i.Publisher != null && i.Publisher.ToLower().Contains(sLower)));
+        }
+
+        if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
+        {
+            var allItems = await query.OrderBy(i => i.FileName).Take(20000).ToListAsync();
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("FileId,FileName,Extension,FullPath,FileSizeBytes,Sha256Hash,DigitalSignatureState,Publisher,AssociatedGame,DetectionStatus,DiscoverySource,LastWriteTimeUtc");
+            foreach (var item in allItems)
+            {
+                sb.AppendLine($"\"{item.FileId}\",\"{EscapeCsv(item.FileName)}\",\"{item.Extension}\",\"{EscapeCsv(item.FullPath)}\",{item.FileSizeBytes},\"{item.Sha256Hash}\",\"{item.DigitalSignatureState}\",\"{EscapeCsv(item.Publisher)}\",\"{item.AssociatedGame}\",\"{item.DetectionStatus}\",\"{item.DiscoverySource}\",\"{item.LastWriteTimeUtc:u}\"");
+            }
+            return File(System.Text.Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", $"{scanId}_FileInventory.csv");
+        }
+
+        var totalItems = await query.CountAsync();
+        var items = await query.OrderBy(i => i.FileName)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(i => new
+            {
+                i.FileId,
+                i.FileName,
+                i.FullPath,
+                i.Extension,
+                i.ActualFileType,
+                i.FileSizeBytes,
+                i.Sha256Hash,
+                i.CreationTimeUtc,
+                i.LastWriteTimeUtc,
+                i.LastAccessTimeUtc,
+                i.DigitalSignatureState,
+                i.Publisher,
+                i.ProductName,
+                i.ProductVersion,
+                i.DiscoverySource,
+                i.AssociatedGame,
+                i.FileAnalysisStatus,
+                i.DetectionStatus,
+                i.DiscoveryContext,
+                i.DetectionNotes
+            })
+            .ToListAsync();
+
+        var allScanInventory = _db.FileInventory.Where(i => i.ScanSessionId == scan.Id);
+
+        return Ok(new
+        {
+            scanId,
+            totalItems,
+            page,
+            pageSize,
+            totalPages = (int)Math.Ceiling((double)totalItems / pageSize),
+            summary = new
+            {
+                totalFiles = await allScanInventory.CountAsync(),
+                totalExe = await allScanInventory.CountAsync(i => i.Extension == ".exe"),
+                totalJar = await allScanInventory.CountAsync(i => i.Extension == ".jar"),
+                totalDll = await allScanInventory.CountAsync(i => i.Extension == ".dll"),
+                totalSys = await allScanInventory.CountAsync(i => i.Extension == ".sys"),
+                totalSigned = await allScanInventory.CountAsync(i => i.DigitalSignatureState.Contains("Signed")),
+                totalUnsigned = await allScanInventory.CountAsync(i => i.DigitalSignatureState == "Unsigned"),
+                totalHashed = await allScanInventory.CountAsync(i => i.Sha256Hash != "hash_unavailable" && i.Sha256Hash != "inaccessible")
+            },
+            items
+        });
+    }
+
+    private static string EscapeCsv(string? val) => (val ?? string.Empty).Replace("\"", "\"\"");
 
     /// <summary>Cancel an active scan.</summary>
     [HttpDelete("{scanId}")]

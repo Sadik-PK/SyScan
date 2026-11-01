@@ -42,6 +42,7 @@ public class ScanSession : BaseEntity
     public ScanConfiguration? Configuration { get; set; }
     public ICollection<ScanEvent> Events { get; set; } = new List<ScanEvent>();
     public ICollection<ScanFinding> Findings { get; set; } = new List<ScanFinding>();
+    public ICollection<FileInventoryItem> FileInventory { get; set; } = new List<FileInventoryItem>();
     public ICollection<EvidenceRecord> EvidenceRecords { get; set; } = new List<EvidenceRecord>();
     public ICollection<ConsentRecord> ConsentRecords { get; set; } = new List<ConsentRecord>();
     public ScanReport? Report { get; set; }

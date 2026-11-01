@@ -40,6 +40,9 @@ public class ScanEngine
     private readonly List<GameInvestigationResult> _collectedGameResults = new();
     private readonly List<SignatureMatchResult> _collectedSignatureMatches = new();
 
+    public int DiscoveredFilesCount => _collectedFiles.Count;
+    public IReadOnlyList<ForensicFileRecord> CollectedFiles => _collectedFiles;
+
     public ScanEngine(ApiClient api)
     {
         _api = api;
@@ -273,7 +276,7 @@ public class ScanEngine
         {
             foreach (var f in gr.Findings)
             {
-                if (f.ArtifactType is "Mod" or "DllInjection" or "Executor")
+                if (f.ArtifactType is "Mod" or "ModJar" or "DllInjection" or "Executor")
                 {
                     findings++;
                     await _api.SubmitFindingAsync(new
@@ -286,8 +289,8 @@ public class ScanEngine
                         filePath = f.FilePath,
                         fileHash = !string.IsNullOrEmpty(f.FilePath) && File.Exists(f.FilePath) ? ComputeFileSha256(f.FilePath) : "unreadable",
                         artifactTimestamp = f.TimestampUtc,
-                        confidence = 88,
-                        explanation = $"Detected suspicious asset in {gr.GameName} directory."
+                        confidence = 95,
+                        explanation = $"Detected recognized utility/cheat client or mod in {gr.GameName} directory/environment."
                     });
                 }
             }
@@ -334,43 +337,13 @@ public class ScanEngine
     {
         int findings = 0;
 
-        // PART 2 & ADDITIONAL REQ 3: Dynamically scan across all accessible local fixed drives
-        var targetRoots = new List<string>();
-        try
-        {
-            foreach (var drive in DriveInfo.GetDrives())
-            {
-                if (drive.DriveType == DriveType.Fixed && drive.IsReady)
-                {
-                    string root = drive.RootDirectory.FullName;
-                    targetRoots.Add(Path.Combine(root, "ProgramData"));
-
-                    string usersDir = Path.Combine(root, "Users");
-                    if (Directory.Exists(usersDir))
-                    {
-                        foreach (var userSub in Directory.GetDirectories(usersDir))
-                        {
-                            string uName = Path.GetFileName(userSub);
-                            if (uName is "Public" or "Default" or "All Users") continue;
-
-                            targetRoots.Add(Path.Combine(userSub, "Downloads"));
-                            targetRoots.Add(Path.Combine(userSub, "Desktop"));
-                            targetRoots.Add(Path.Combine(userSub, "AppData", "Local", "Temp"));
-                        }
-                    }
-                }
-            }
-        }
-        catch { }
-
-        // Fallbacks
-        targetRoots.Add(Path.GetTempPath());
-        var validRoots = targetRoots.Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // Discover all local fixed drive scan roots dynamically (does not assume C:)
+        var validRoots = ForensicFileInventoryEngine.DiscoverScanRoots();
 
         var options = new ForensicFileInventoryOptions
         {
-            MaxFilesToScan = 4000,
-            MaxDirectoryDepth = 6
+            MaxFilesToScan = 15000,
+            MaxDirectoryDepth = 10
         };
 
         var fileEngine = new ForensicFileInventoryEngine(options);
@@ -384,7 +357,26 @@ public class ScanEngine
 
             _collectedFiles.Add(record);
 
-            // 1. Check for suspicious path and suspicious name
+            // 1. Recognize JAR cheat / utility clients (e.g. Meteor Client in Downloads, Desktop, or anywhere)
+            if (record.DetectionStatus == "CheatUtility" || (record.JarInfo != null && record.JarInfo.IsKnownCheatClient))
+            {
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "file-system-scanner",
+                    category = "Detection",
+                    severity = "Critical",
+                    title = $"Known Minecraft Utility Client: {record.JarInfo?.KnownClientName ?? "Meteor Client"}",
+                    description = $"{record.DetectionNote}. Location: {record.DiscoveryContext} ({record.FullPath})",
+                    filePath = record.FullPath,
+                    fileHash = record.Sha256Hash,
+                    artifactTimestamp = record.LastWriteTimeUtc,
+                    confidence = 96,
+                    explanation = $"Java archive inspection identified {record.JarInfo?.KnownClientName ?? "Meteor Client"} mod metadata."
+                });
+            }
+
+            // 2. Check for suspicious path and suspicious name for executables
             if (record.IsSuspiciousPath && (record.Extension is ".exe" or ".dll" or ".sys" or ".asi"))
             {
                 string lower = record.FileName.ToLowerInvariant();
@@ -415,7 +407,7 @@ public class ScanEngine
                 }
             }
 
-            // 2. Scan file buffer with Signature Engine (with generic API false-positive protection)
+            // 3. Scan file buffer with Signature Engine (with generic API false-positive protection)
             if (record.FileSizeBytes > 0 && record.FileSizeBytes < 10 * 1024 * 1024)
             {
                 try
@@ -443,6 +435,42 @@ public class ScanEngine
                 catch { }
             }
         }
+
+        // Submit the complete file inventory to the backend database in chunks
+        try
+        {
+            var inventoryItems = _collectedFiles.Select(f => new
+            {
+                fileName = f.FileName,
+                fullPath = f.FullPath,
+                extension = f.Extension,
+                actualFileType = f.ActualFileType,
+                fileSizeBytes = f.FileSizeBytes,
+                sha256Hash = f.Sha256Hash,
+                creationTimeUtc = f.CreationTimeUtc,
+                lastWriteTimeUtc = f.LastWriteTimeUtc,
+                lastAccessTimeUtc = f.LastAccessTimeUtc == DateTime.MinValue ? (DateTime?)null : f.LastAccessTimeUtc,
+                digitalSignatureState = f.Signature.IsSigned ? (f.Signature.IsTrustedVendor ? "SignedVerified" : "Signed") : "Unsigned",
+                publisher = f.Signature.Subject ?? f.Signature.SignerName,
+                productName = f.PeInfo?.FileDescription,
+                productVersion = f.PeInfo?.FileVersion ?? f.JarInfo?.MinecraftMod?.Version,
+                peMetadataJson = f.PeInfo != null ? JsonSerializer.Serialize(f.PeInfo) : null,
+                jarMetadataJson = f.JarInfo != null ? JsonSerializer.Serialize(f.JarInfo) : null,
+                discoverySource = f.DiscoverySource,
+                associatedGame = f.AssociatedGame,
+                fileAnalysisStatus = f.FileAnalysisStatus,
+                detectionStatus = f.DetectionStatus,
+                discoveryContext = f.DiscoveryContext,
+                detectionNotes = f.DetectionNote
+            }).ToList();
+
+            for (int i = 0; i < inventoryItems.Count; i += 200)
+            {
+                var chunk = inventoryItems.Skip(i).Take(200).ToList();
+                await _api.SubmitInventoryBatchAsync(chunk);
+            }
+        }
+        catch { }
 
         return new ModuleRunResult(true, "Completed", findings);
     }

@@ -106,7 +106,17 @@ public class ApiClient
         catch { return null; }
     }
 
-    public async Task<bool> CompleteScanAsync(int totalFindings, string[] completedModules, string[] failedModules)
+    public async Task<bool> SubmitInventoryBatchAsync(IEnumerable<object> items)
+    {
+        try
+        {
+            var response = await _http.PostAsJsonAsync("api/scanner/inventory", new { items });
+            return response.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
+
+    public async Task<bool> CompleteScanAsync(int totalFindings, string[] completedModules, string[] failedModules, int totalFilesDiscovered = 0, int totalFilesAnalyzed = 0)
     {
         try
         {
@@ -114,7 +124,9 @@ public class ApiClient
             {
                 totalFindings,
                 completedModules,
-                failedModules
+                failedModules,
+                totalFilesDiscovered,
+                totalFilesAnalyzed
             });
             return response.IsSuccessStatusCode;
         }

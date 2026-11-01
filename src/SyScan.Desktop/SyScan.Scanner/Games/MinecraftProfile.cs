@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using SyScan.Scanner.FileSystem;
 
 namespace SyScan.Scanner.Games;
 
@@ -17,7 +18,8 @@ public sealed class MinecraftProfile : IGameProfile
     {
         "vape", "drip", "raven", "liquidbounce", "wurst", "meteor",
         "inertia", "aristois", "sigma", "koid", "whiteout", "entropy",
-        "prestige", "doomsday", "tuke", "autoclicker", "reach", "velocity"
+        "prestige", "doomsday", "tuke", "autoclicker", "reach", "velocity",
+        "bleachhack", "baritone"
     };
 
     public async Task<GameInvestigationResult> InvestigateAsync(CancellationToken cancellationToken = default)
@@ -29,6 +31,7 @@ public sealed class MinecraftProfile : IGameProfile
         };
 
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         var candidateDirs = new List<string>
@@ -37,7 +40,12 @@ public sealed class MinecraftProfile : IGameProfile
             Path.Combine(userProfile, ".lunarclient"),
             Path.Combine(appData, ".feather"),
             Path.Combine(appData, "PrismLauncher"),
-            Path.Combine(appData, ".technic")
+            Path.Combine(appData, ".technic"),
+            Path.Combine(localAppData, "Programs", "Modrinth App"),
+            Path.Combine(userProfile, "curseforge", "minecraft"),
+            // Also inspect user Downloads and Desktop for stored Minecraft utility clients
+            Path.Combine(userProfile, "Downloads"),
+            Path.Combine(userProfile, "Desktop")
         };
 
         foreach (var dir in candidateDirs)
@@ -49,50 +57,17 @@ public sealed class MinecraftProfile : IGameProfile
             }
         }
 
-        if (!result.GameInstalled)
-            return result;
+        // 1. Inspect all discovered directories for JAR files (mods, loaders, downloaded clients)
+        foreach (var dir in result.InstallationPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await InspectJarDirectoryAsync(dir, result, cancellationToken);
+        }
 
+        // 2. Inspect Logs & Decompress .log.gz
         string mcDir = Path.Combine(appData, ".minecraft");
         if (Directory.Exists(mcDir))
         {
-            // 1. Inspect Mods Directory
-            string modsDir = Path.Combine(mcDir, "mods");
-            if (Directory.Exists(modsDir))
-            {
-                try
-                {
-                    var modFiles = Directory.GetFiles(modsDir, "*.jar", SearchOption.AllDirectories);
-                    result.ModsScanned += modFiles.Length;
-
-                    foreach (var modFile in modFiles)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        string fileName = Path.GetFileName(modFile).ToLowerInvariant();
-
-                        foreach (var kw in SuspiciousKeywords)
-                        {
-                            if (fileName.Contains(kw))
-                            {
-                                result.Findings.Add(new GameFinding
-                                {
-                                    RuleId = "MC_SUSPICIOUS_MOD_NAME",
-                                    FindingName = $"Detected Cheat Mod: {Path.GetFileName(modFile)}",
-                                    Description = $"Mod filename matches known Minecraft blacklisted client/cheat signature: '{kw}'",
-                                    Severity = "High",
-                                    ArtifactType = "Mod",
-                                    FilePath = modFile,
-                                    TimestampUtc = File.GetLastWriteTimeUtc(modFile)
-                                });
-                                break;
-                            }
-                        }
-                    }
-                }
-                catch (OperationCanceledException) { throw; }
-                catch { }
-            }
-
-            // 2. Inspect Logs & Decompress .log.gz
             string logsDir = Path.Combine(mcDir, "logs");
             if (Directory.Exists(logsDir))
             {
@@ -101,6 +76,92 @@ public sealed class MinecraftProfile : IGameProfile
         }
 
         return result;
+    }
+
+    private async Task InspectJarDirectoryAsync(string dir, GameInvestigationResult result, CancellationToken ct)
+    {
+        string[] jarFiles;
+        try
+        {
+            // If scanning Downloads or Desktop, search top directory only to prevent infinite crawl
+            var searchOption = (dir.EndsWith("Downloads", StringComparison.OrdinalIgnoreCase) ||
+                                dir.EndsWith("Desktop", StringComparison.OrdinalIgnoreCase))
+                ? SearchOption.TopDirectoryOnly
+                : SearchOption.AllDirectories;
+
+            jarFiles = Directory.GetFiles(dir, "*.jar", searchOption);
+        }
+        catch
+        {
+            return;
+        }
+
+        result.ModsScanned += jarFiles.Length;
+
+        foreach (var jarFile in jarFiles)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                // Perform deep Jar analysis (manifest, fabric.mod.json, packages)
+                var jarAnalysis = JarAnalyzer.AnalyzeJar(jarFile);
+
+                if (jarAnalysis.IsKnownCheatClient)
+                {
+                    bool inDownloads = jarFile.Contains(@"\downloads\", StringComparison.OrdinalIgnoreCase);
+                    bool inDesktop = jarFile.Contains(@"\desktop\", StringComparison.OrdinalIgnoreCase);
+                    string locationContext = inDownloads
+                        ? "Found on disk (in Downloads directory)"
+                        : inDesktop
+                            ? "Found on disk (in Desktop directory)"
+                            : "Installed in game mod directory";
+
+                    result.Findings.Add(new GameFinding
+                    {
+                        RuleId = "MC_KNOWN_UTILITY_CLIENT",
+                        FindingName = $"Known Minecraft Utility Client: {jarAnalysis.KnownClientName ?? "Meteor Client"}",
+                        Description = $"{jarAnalysis.DetectionReason}. Location: {locationContext} ({jarFile}).",
+                        Severity = "Critical",
+                        ArtifactType = "ModJar",
+                        FilePath = jarFile,
+                        TimestampUtc = File.GetLastWriteTimeUtc(jarFile),
+                        Metadata = new Dictionary<string, string>
+                        {
+                            { "Sha256", jarAnalysis.Sha256Hash },
+                            { "ClientName", jarAnalysis.KnownClientName ?? "Meteor Client" },
+                            { "DiscoveryContext", locationContext },
+                            { "MainClass", jarAnalysis.MainClass ?? "N/A" },
+                            { "Version", jarAnalysis.MinecraftMod?.Version ?? "N/A" }
+                        }
+                    });
+                }
+                else
+                {
+                    // Fallback to name heuristic for suspicious keywords if jar analysis didn't flag it
+                    string fileName = Path.GetFileName(jarFile).ToLowerInvariant();
+                    foreach (var kw in SuspiciousKeywords)
+                    {
+                        if (fileName.Contains(kw))
+                        {
+                            result.Findings.Add(new GameFinding
+                            {
+                                RuleId = "MC_SUSPICIOUS_MOD_NAME",
+                                FindingName = $"Suspicious Minecraft Mod Binary: {Path.GetFileName(jarFile)}",
+                                Description = $"Mod filename matches suspicious Minecraft client/cheat keyword: '{kw}'",
+                                Severity = "High",
+                                ArtifactType = "Mod",
+                                FilePath = jarFile,
+                                TimestampUtc = File.GetLastWriteTimeUtc(jarFile)
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { }
+        }
     }
 
     private async Task ScanLogsDirectoryAsync(string logsDir, GameInvestigationResult result, CancellationToken cancellationToken)
@@ -196,6 +257,22 @@ public sealed class MinecraftProfile : IGameProfile
             }
         }
 
+        // Check for Meteor Client / utility client loaded in logs
+        if (lower.Contains("meteor-client") || lower.Contains("meteor client") || lower.Contains("meteordevelopment"))
+        {
+            result.Findings.Add(new GameFinding
+            {
+                RuleId = "MC_LOG_METEOR_CLIENT",
+                FindingName = "Observed Meteor Client Loaded in Game Runtime Log",
+                Description = $"Historical log entry confirms Meteor Client was actively executed: '{line.Trim()}'",
+                Severity = "Critical",
+                ArtifactType = "Log",
+                FilePath = sourceFile,
+                Metadata = new() { { "LineNumber", lineNum.ToString() }, { "Snippet", line.Trim() } }
+            });
+            return;
+        }
+
         foreach (var kw in SuspiciousKeywords)
         {
             if (lower.Contains(kw) && (lower.Contains("injected") || lower.Contains("hooked") || lower.Contains("module") || lower.Contains("loaded")))
@@ -215,4 +292,3 @@ public sealed class MinecraftProfile : IGameProfile
         }
     }
 }
-

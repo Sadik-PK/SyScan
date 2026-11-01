@@ -96,7 +96,8 @@ public partial class ActiveScanView : UserControl
             UpdateProgress(_modules.Length, _modules.Length);
             CurrentModuleText.Text = "Scan complete. Submitting evidence...";
             await api.CompleteScanAsync(totalFindings,
-                [.. completedModules], [.. failedModules]);
+                [.. completedModules], [.. failedModules],
+                engine.DiscoveredFilesCount, engine.DiscoveredFilesCount);
 
             // Navigate to completed view
             Application.Current.Dispatcher.Invoke(() =>
