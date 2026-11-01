@@ -101,9 +101,11 @@ public class ScannerController : ControllerBase
         var scanSessionId = GetScanSessionId();
         if (scanSessionId is null) return Unauthorized();
 
+        var actualCount = await _db.ScanFindings.CountAsync(f => f.ScanSessionId == scanSessionId && f.ModuleId == moduleId);
+
         await _scanService.RecordScanEventAsync(scanSessionId.Value, ScanEventType.ModuleCompleted,
-            $"Module completed: {moduleId} — {result.FindingsCount} finding(s)", moduleId,
-            JsonSerializer.Serialize(new { result.FindingsCount, result.Status, result.ErrorMessage }));
+            $"Module completed: {moduleId} — {actualCount} finding(s) cataloged (Status: {result.Status})", moduleId,
+            JsonSerializer.Serialize(new { FindingsCount = actualCount, result.Status, result.ErrorMessage }));
 
         var scanId = await GetScanIdAsync(scanSessionId.Value);
         if (scanId is not null)

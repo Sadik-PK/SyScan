@@ -16,6 +16,7 @@ public sealed class JumpListEntry
     public DateTime? TargetAccessedUtc { get; set; }
     public long FileSizeBytes { get; set; }
     public bool IsSuspicious { get; set; }
+    public bool IsInformational { get; set; } = true;
 }
 
 public static class JumpListParser
@@ -24,6 +25,17 @@ public static class JumpListParser
     private static readonly byte[] LnkGuid = new byte[] {
         0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
         0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
+    };
+
+    private static readonly HashSet<string> ExecutableExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".dll", ".sys", ".bat", ".cmd", ".ps1", ".vbs", ".jar", ".asi"
+    };
+
+    private static readonly string[] SuspiciousCheatKeywords = new[]
+    {
+        "vape", "drip", "cheat", "injector", "aimbot", "redengine", "eulen",
+        "hammafia", "kiddions", "spoofer", "bypass"
     };
 
     public static List<JumpListEntry> ParseStreamOrFile(byte[] data, string sourcePath = "")
@@ -35,7 +47,6 @@ public static class JumpListParser
         int offset = 0;
         while (offset <= data.Length - 76)
         {
-            // Check for header size 0x4C and GUID
             if (BitConverter.ToUInt32(data, offset) == 0x4C)
             {
                 bool guidMatch = true;
@@ -58,10 +69,7 @@ public static class JumpListParser
                             results.Add(entry);
                         }
                     }
-                    catch
-                    {
-                        // Ignore corrupt inner record and proceed
-                    }
+                    catch { }
                 }
             }
 
@@ -92,7 +100,9 @@ public static class JumpListParser
             TargetCreatedUtc = cTime,
             TargetAccessedUtc = aTime,
             TargetModifiedUtc = mTime,
-            FileSizeBytes = fileSize
+            FileSizeBytes = fileSize,
+            IsInformational = true,
+            IsSuspicious = false
         };
 
         int curr = start + 76;
@@ -117,7 +127,6 @@ public static class JumpListParser
                     entry.TargetPath = path;
                 }
 
-                // Check Unicode local base path if header is large enough
                 int headerSize = BitConverter.ToInt32(data, curr + 4);
                 if (headerSize >= 36 && curr + 32 <= data.Length)
                 {
@@ -136,10 +145,8 @@ public static class JumpListParser
             }
         }
 
-        // If TargetPath is still empty, scan remaining section for string paths
         if (string.IsNullOrWhiteSpace(entry.TargetPath) && curr < data.Length)
         {
-            // Scan for drive letter pattern like "C:\"
             int scanLen = Math.Min(data.Length - curr, 1024);
             string remainderAscii = Encoding.ASCII.GetString(data, curr, scanLen);
             int driveIdx = remainderAscii.IndexOf(@":\", StringComparison.Ordinal);
@@ -159,15 +166,27 @@ public static class JumpListParser
 
         if (!string.IsNullOrWhiteSpace(entry.TargetPath))
         {
+            string ext = Path.GetExtension(entry.TargetPath).ToLowerInvariant();
             string lower = entry.TargetPath.ToLowerInvariant();
-            if (lower.Contains(@"\temp\") ||
-                lower.Contains(@"\downloads\") ||
-                lower.Contains("vape") ||
-                lower.Contains("cheat") ||
-                lower.Contains("drip") ||
-                lower.Contains("injector"))
+
+            // ONLY mark as suspicious if the target is an executable/script/driver AND contains cheat keywords
+            if (ExecutableExtensions.Contains(ext))
             {
-                entry.IsSuspicious = true;
+                foreach (var kw in SuspiciousCheatKeywords)
+                {
+                    if (lower.Contains(kw))
+                    {
+                        entry.IsSuspicious = true;
+                        entry.IsInformational = false;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                // Normal documents, PDFs, media, text files are strictly informational
+                entry.IsSuspicious = false;
+                entry.IsInformational = true;
             }
         }
 
@@ -177,20 +196,14 @@ public static class JumpListParser
     private static string ReadNullTerminatedAscii(byte[] data, int start)
     {
         int end = start;
-        while (end < data.Length && data[end] != 0)
-        {
-            end++;
-        }
+        while (end < data.Length && data[end] != 0) end++;
         return Encoding.ASCII.GetString(data, start, end - start);
     }
 
     private static string ReadNullTerminatedUnicode(byte[] data, int start)
     {
         int end = start;
-        while (end + 1 < data.Length && !(data[end] == 0 && data[end + 1] == 0))
-        {
-            end += 2;
-        }
+        while (end + 1 < data.Length && !(data[end] == 0 && data[end + 1] == 0)) end += 2;
         return Encoding.Unicode.GetString(data, start, end - start);
     }
 
@@ -201,12 +214,12 @@ public static class JumpListParser
 
     public static List<JumpListEntry> ScanRecentDestinations()
     {
-        var results = new List<JumpListEntry>();
+        var rawResults = new List<JumpListEntry>();
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         string recent = Path.Combine(appData, @"Microsoft\Windows\Recent");
 
         if (!Directory.Exists(recent))
-            return results;
+            return rawResults;
 
         string[] targets = new[]
         {
@@ -227,21 +240,27 @@ public static class JumpListParser
                     {
                         byte[] bytes = File.ReadAllBytes(file);
                         var parsed = ParseStreamOrFile(bytes, file);
-                        results.AddRange(parsed);
+                        rawResults.AddRange(parsed);
                     }
-                    catch
-                    {
-                        // File locked or read permission denied
-                    }
+                    catch { }
                 }
             }
-            catch
+            catch { }
+        }
+
+        // Deduplicate entries by target path to avoid inflating counts
+        var deduplicated = new List<JumpListEntry>();
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in rawResults)
+        {
+            if (string.IsNullOrWhiteSpace(entry.TargetPath)) continue;
+            if (seenPaths.Add(entry.TargetPath))
             {
-                // Directory enumeration error
+                deduplicated.Add(entry);
             }
         }
 
-        return results;
+        return deduplicated;
     }
 }
-

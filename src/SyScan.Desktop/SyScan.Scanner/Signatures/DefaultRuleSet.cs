@@ -11,50 +11,34 @@ public static class DefaultRuleSet
         {
             new DetectionRule
             {
-                RuleId = "RULE_AUTOCLICKER_GENERIC",
-                Name = "Generic High-Frequency AutoClicker",
+                RuleId = "RULE_AUTOCLICKER_SPECIALIZED",
+                Name = "Specialized Game AutoClicker Macro Routine",
                 Category = RuleCategory.AutoClicker,
-                Severity = "High",
-                Description = "Contains mouse_event / SendInput loops with millisecond sleep delays typical of combat auto-clickers.",
+                Severity = "Medium",
+                Description = "Contains randomized CPS interval generation and synthetic click jitter formulas specific to combat clicking macros.",
                 TargetGame = "Universal",
                 StringPatterns = new List<string>
                 {
-                    "MOUSEEVENTF_LEFTDOWN",
-                    "MOUSEEVENTF_LEFTUP",
-                    "CPS",
-                    "Jitter"
-                }
-            },
-            new DetectionRule
-            {
-                RuleId = "RULE_DLL_INJECTOR_WIN32",
-                Name = "Standard Win32 Process Injector",
-                Category = RuleCategory.Injector,
-                Severity = "Critical",
-                Description = "Contains Win32 memory allocation and remote thread execution APIs used for DLL injection.",
-                TargetGame = "Universal",
-                StringPatterns = new List<string>
-                {
-                    "VirtualAllocEx",
-                    "WriteProcessMemory",
-                    "CreateRemoteThread",
-                    "LoadLibraryA"
+                    "RandomCPS",
+                    "ClickJitter",
+                    "CPSLimit",
+                    "BlockHitMacro"
                 }
             },
             new DetectionRule
             {
                 RuleId = "RULE_MANUAL_MAP_INJECTOR",
-                Name = "Manual Map / Reflective PE Loader",
+                Name = "Reflective PE Loader & Manual Mapper",
                 Category = RuleCategory.Injector,
                 Severity = "Critical",
-                Description = "Detects strings indicative of manual PE mapping to bypass standard LoadLibrary anticheat hooks.",
+                Description = "Matches specific reflective PE injection stubs and manual mapping routines designed to evade API monitoring.",
                 TargetGame = "Universal",
                 StringPatterns = new List<string>
                 {
                     "ReflectiveLoader",
-                    "ManualMap",
-                    "NtCreateThreadEx",
-                    "NtWriteVirtualMemory"
+                    "ManualMapInjection",
+                    "NtCreateThreadEx_Stub",
+                    "QueueUserApc_Injection"
                 }
             },
             new DetectionRule
@@ -79,14 +63,13 @@ public static class DefaultRuleSet
                 Name = "FiveM Lua / Native Cheat Executor",
                 Category = RuleCategory.CheatLoader,
                 Severity = "Critical",
-                Description = "Matches signatures and resources of popular FiveM execution frameworks.",
+                Description = "Matches signatures and resources of known FiveM cheat execution frameworks.",
                 TargetGame = "FiveM",
                 StringPatterns = new List<string>
                 {
                     "eulen.cc",
                     "redengine.eu",
-                    "hammafia",
-                    "CitizenFX.Core.Native"
+                    "hammafia_loader"
                 }
             },
             new DetectionRule
@@ -100,12 +83,10 @@ public static class DefaultRuleSet
                 StringPatterns = new List<string>
                 {
                     "fsutil usn deletejournal",
-                    "wevtutil cl",
-                    "Clear-EventLog",
-                    "Stop-Service EventLog"
+                    "wevtutil cl System",
+                    "wevtutil cl Security"
                 }
             }
         };
     }
 }
-

@@ -12,7 +12,7 @@ public partial class App : Application
     public static ScanSessionService? ScanSession { get; private set; }
     public static ApiClient? Api { get; private set; }
 
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
@@ -23,6 +23,9 @@ public partial class App : Application
         // Register syscan:// URI scheme in HKCU for seamless browser launching
         RegisterUriScheme();
 
+        // ADDITIONAL REQUIREMENT 1: Request administrator elevation immediately upon application launch
+        await ElevationManager.InitializeElevationAsync();
+
         // Check for invitation token passed via command-line or custom URI scheme
         string? token = null;
         if (e.Args.Length > 0)
@@ -30,6 +33,12 @@ public partial class App : Application
 
         var mainWindow = new MainWindow(token);
         mainWindow.Show();
+    }
+
+    protected override async void OnExit(ExitEventArgs e)
+    {
+        await ElevationManager.ShutdownAsync();
+        base.OnExit(e);
     }
 
     private static void RegisterUriScheme()
@@ -60,14 +69,12 @@ public partial class App : Application
 
     private static string? ExtractToken(string arg)
     {
-        // Support: syscan://invite/TOKEN or syscan://invite?token=TOKEN
         if (arg.StartsWith("syscan://invite/", StringComparison.OrdinalIgnoreCase))
             return arg["syscan://invite/".Length..].TrimEnd('/');
         if (arg.StartsWith("syscan://invite?token=", StringComparison.OrdinalIgnoreCase))
             return arg["syscan://invite?token=".Length..].TrimEnd('/');
         if (arg.StartsWith("--invite=", StringComparison.OrdinalIgnoreCase))
             return arg["--invite=".Length..];
-        // Raw token
         if (arg.Length > 10 && !arg.StartsWith("-"))
             return arg;
         return null;

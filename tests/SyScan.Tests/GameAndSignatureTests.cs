@@ -57,34 +57,34 @@ public class GameAndSignatureTests
     }
 
     [Fact]
-    public void SignatureEngine_DetectsWin32InjectorPatterns()
+    public void SignatureEngine_DetectsManualMapInjectorPatterns()
     {
         var engine = new SignatureEngine();
         string sampleCode = @"
-            HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-            LPVOID mem = VirtualAllocEx(hProc, NULL, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-            WriteProcessMemory(hProc, mem, dllPath, size, NULL);
-            CreateRemoteThread(hProc, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryA, mem, 0, NULL);
+            void InjectPayload() {
+                ReflectiveLoader();
+                ManualMapInjection(targetPid);
+            }
         ";
 
         byte[] buffer = Encoding.ASCII.GetBytes(sampleCode);
         var matches = engine.ScanBuffer(buffer, "test_injector.cpp");
 
         Assert.NotEmpty(matches);
-        Assert.Contains(matches, m => m.RuleId == "RULE_DLL_INJECTOR_WIN32");
+        Assert.Contains(matches, m => m.RuleId == "RULE_MANUAL_MAP_INJECTOR");
         Assert.Equal("Critical", matches[0].Severity);
     }
 
     [Fact]
-    public void SignatureEngine_DetectsAutoClickerPatterns()
+    public void SignatureEngine_DetectsSpecializedAutoClickerPatterns()
     {
         var engine = new SignatureEngine();
-        string sampleClicker = "mouse_event MOUSEEVENTF_LEFTDOWN; Sleep(10); mouse_event MOUSEEVENTF_LEFTUP; Jitter formula calculation; CPS limit";
+        string sampleClicker = "void ClickLoop() { RandomCPS(); ClickJitter(); CPSLimit = 20; }";
         byte[] buffer = Encoding.ASCII.GetBytes(sampleClicker);
 
-        var matches = engine.ScanBuffer(buffer, "clicker.exe");
+        var matches = engine.ScanBuffer(buffer, "custom_clicker.exe");
         Assert.NotEmpty(matches);
-        Assert.Contains(matches, m => m.RuleId == "RULE_AUTOCLICKER_GENERIC");
+        Assert.Contains(matches, m => m.RuleId == "RULE_AUTOCLICKER_SPECIALIZED");
     }
 
     [Fact]
@@ -152,8 +152,8 @@ public class GameAndSignatureTests
         {
             new SignatureMatchResult
             {
-                RuleId = "RULE_DLL_INJECTOR_WIN32",
-                RuleName = "Standard Win32 Process Injector",
+                RuleId = "RULE_MANUAL_MAP_INJECTOR",
+                RuleName = "Reflective PE Loader & Manual Mapper",
                 Severity = "Critical",
                 FilePath = @"C:\Users\Player\Downloads\cheat.exe",
                 Description = "Memory injection APIs detected"

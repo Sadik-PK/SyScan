@@ -5,17 +5,20 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.ServiceProcess;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 using SyScan.Desktop.Services;
+using SyScan.Scanner.Allowlist;
 using SyScan.Scanner.Correlation;
 using SyScan.Scanner.FileSystem;
 using SyScan.Scanner.Games;
 using SyScan.Scanner.Historical;
+using SyScan.Scanner.IPC;
 using SyScan.Scanner.Ntfs;
+using SyScan.Scanner.Recon;
 using SyScan.Scanner.Signatures;
 
 namespace SyScan.Desktop.Scanner;
@@ -28,7 +31,7 @@ public class ScanEngine
     private readonly SignatureEngine _signatureEngine = new();
     private readonly GameInvestigationEngine _gameEngine = new();
 
-    // Cache of collected artifacts for final correlation
+    // Cache of collected artifacts for final correlation and report reconciliation
     private readonly List<ForensicFileRecord> _collectedFiles = new();
     private readonly List<PrefetchEntry> _collectedPrefetch = new();
     private readonly List<BamDamEntry> _collectedBam = new();
@@ -83,11 +86,10 @@ public class ScanEngine
         {
             "cheatengine", "cheatengine-x86_64", "x64dbg", "x32dbg", "ida64", "ida",
             "kiddions", "injector", "extremeinjector", "dllinjector", "ghinjector",
-            "liquidbounce", "wurst", "aristois", "meteor", "sigma", "flux",
-            "autoclicker", "speedclicker", "opautoclicker", "macrokey"
+            "liquidbounce", "wurst", "aristois", "meteor", "sigma", "flux"
         };
 
-        var suspiciousPaths = new[] { "\\Temp\\", "\\AppData\\Local\\Temp\\", "\\Downloads\\" };
+        var suspiciousPaths = new[] { "\\Temp\\", "\\AppData\\Local\\Temp\\" };
 
         foreach (var p in processes)
         {
@@ -101,7 +103,19 @@ public class ScanEngine
             }
             catch
             {
-                // Access denied for system processes
+                // Access denied for protected or system processes
+            }
+
+            // CRITICAL FIX: Suppress SyScan self-detection
+            if (SyScanIdentity.IsSyScanComponent(mainModulePath, name))
+            {
+                continue;
+            }
+
+            // CRITICAL FIX: Whitelist legitimate anti-cheat processes
+            if (AntiCheatAllowlist.IsLegitimateAntiCheatService(name, name, mainModulePath ?? ""))
+            {
+                continue;
             }
 
             if (knownCheatSignatures.Any(sig => name.Contains(sig, StringComparison.OrdinalIgnoreCase)))
@@ -122,19 +136,24 @@ public class ScanEngine
             }
             else if (mainModulePath != null && suspiciousPaths.Any(sp => mainModulePath.Contains(sp, StringComparison.OrdinalIgnoreCase)))
             {
-                findings++;
-                await _api.SubmitFindingAsync(new
+                // Only flag if not signed by a trusted vendor
+                var sig = AuthenticodeVerifier.Verify(mainModulePath);
+                if (!sig.IsSigned || !sig.IsTrustedVendor)
                 {
-                    moduleId = "process-scanner",
-                    category = "Suspicious",
-                    severity = "Warning",
-                    title = $"Executable Running from Temporary / User Directory: {name}.exe",
-                    description = $"Process '{name}' (PID: {p.Id}) is running from suspicious path: {mainModulePath}",
-                    filePath = mainModulePath,
-                    fileHash = ComputeFileSha256(mainModulePath),
-                    confidence = 70,
-                    explanation = "Running executables from Temp or Downloads directories is common for loaders and ephemeral cheats."
-                });
+                    findings++;
+                    await _api.SubmitFindingAsync(new
+                    {
+                        moduleId = "process-scanner",
+                        category = "Suspicious",
+                        severity = "Warning",
+                        title = $"Unsigned Executable Running from Temporary Directory: {name}.exe",
+                        description = $"Process '{name}' (PID: {p.Id}) is running from suspicious path: {mainModulePath}",
+                        filePath = mainModulePath,
+                        fileHash = ComputeFileSha256(mainModulePath),
+                        confidence = 65,
+                        explanation = "Running unsigned binaries from temporary folders is common for ephemeral cheat loaders."
+                    });
+                }
             }
         }
 
@@ -146,7 +165,7 @@ public class ScanEngine
     private async Task<ModuleRunResult> ScanServicesAsync(CancellationToken ct)
     {
         int findings = 0;
-        var suspiciousServiceKeywords = new[] { "cheat", "hack", "bypass", "spoofer", "injector" };
+        var suspiciousServiceKeywords = new[] { "hack", "bypass", "spoofer", "injector" };
 
         try
         {
@@ -162,6 +181,13 @@ public class ScanEngine
                     string displayName = svcSubKey.GetValue("DisplayName")?.ToString() ?? svcName;
                     string imagePath = svcSubKey.GetValue("ImagePath")?.ToString() ?? "";
 
+                    // CRITICAL FIX: Verify and whitelist legitimate anti-cheat services (e.g. EasyAntiCheat_EOS)
+                    if (AntiCheatAllowlist.IsLegitimateAntiCheatService(svcName, displayName, imagePath))
+                    {
+                        continue;
+                    }
+
+                    // Only flag actual suspicious keywords (avoid flagging because of substring 'cheat' in legitimate software)
                     if (suspiciousServiceKeywords.Any(k => svcName.Contains(k, StringComparison.OrdinalIgnoreCase) ||
                                                            displayName.Contains(k, StringComparison.OrdinalIgnoreCase) ||
                                                            imagePath.Contains(k, StringComparison.OrdinalIgnoreCase)))
@@ -207,6 +233,12 @@ public class ScanEngine
                 ct.ThrowIfCancellationRequested();
                 string fileName = Path.GetFileName(driver);
 
+                // CRITICAL FIX: Never flag legitimate anti-cheat drivers
+                if (AntiCheatAllowlist.IsLegitimateAntiCheatDriver(fileName, driver))
+                {
+                    continue;
+                }
+
                 if (vulnerableDrivers.Contains(fileName))
                 {
                     findings++;
@@ -216,7 +248,7 @@ public class ScanEngine
                         category = "Detection",
                         severity = "Critical",
                         title = $"Known Vulnerable / Exploited Driver: {fileName}",
-                        description = $"Driver '{fileName}' in drivers directory matches known BYOVD (Bring Your Own Vulnerable Driver) exploit list.",
+                        description = $"Driver '{fileName}' matches known BYOVD (Bring Your Own Vulnerable Driver) exploit catalog.",
                         filePath = driver,
                         fileHash = ComputeFileSha256(driver),
                         confidence = 90,
@@ -297,39 +329,68 @@ public class ScanEngine
     }
     #endregion
 
-    #region Module 6: Full File System Scanner
+    #region Module 6: Full File System Scanner (Multi-Drive)
     private async Task<ModuleRunResult> ScanFileSystemAsync(CancellationToken ct)
     {
         int findings = 0;
 
-        var targetRoots = new List<string>
+        // PART 2 & ADDITIONAL REQ 3: Dynamically scan across all accessible local fixed drives
+        var targetRoots = new List<string>();
+        try
         {
-            Path.GetTempPath(),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Desktop"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp")
-        };
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (drive.DriveType == DriveType.Fixed && drive.IsReady)
+                {
+                    string root = drive.RootDirectory.FullName;
+                    targetRoots.Add(Path.Combine(root, "ProgramData"));
+
+                    string usersDir = Path.Combine(root, "Users");
+                    if (Directory.Exists(usersDir))
+                    {
+                        foreach (var userSub in Directory.GetDirectories(usersDir))
+                        {
+                            string uName = Path.GetFileName(userSub);
+                            if (uName is "Public" or "Default" or "All Users") continue;
+
+                            targetRoots.Add(Path.Combine(userSub, "Downloads"));
+                            targetRoots.Add(Path.Combine(userSub, "Desktop"));
+                            targetRoots.Add(Path.Combine(userSub, "AppData", "Local", "Temp"));
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+
+        // Fallbacks
+        targetRoots.Add(Path.GetTempPath());
+        var validRoots = targetRoots.Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         var options = new ForensicFileInventoryOptions
         {
-            MaxFilesToScan = 3000,
-            MaxDirectoryDepth = 5
+            MaxFilesToScan = 4000,
+            MaxDirectoryDepth = 6
         };
 
         var fileEngine = new ForensicFileInventoryEngine(options);
-        var discoveredRecords = await fileEngine.ScanDirectoriesAsync(targetRoots, null, ct);
+        var discoveredRecords = await fileEngine.ScanDirectoriesAsync(validRoots, null, ct);
 
         foreach (var record in discoveredRecords)
         {
+            // Suppress SyScan self-detection
+            if (SyScanIdentity.IsSyScanComponent(record.FullPath, record.FileName))
+                continue;
+
             _collectedFiles.Add(record);
 
             // 1. Check for suspicious path and suspicious name
-            if (record.IsSuspiciousPath && (record.Extension is ".exe" or ".dll" or ".sys"))
+            if (record.IsSuspiciousPath && (record.Extension is ".exe" or ".dll" or ".sys" or ".asi"))
             {
                 string lower = record.FileName.ToLowerInvariant();
-                bool nameSuspicious = lower.Contains("cheat") || lower.Contains("inject") ||
-                                      lower.Contains("clicker") || lower.Contains("vape") ||
-                                      lower.Contains("bypass") || lower.Contains("spoofer");
+                bool nameSuspicious = lower.Contains("vape") || lower.Contains("drip") ||
+                                      lower.Contains("redengine") || lower.Contains("eulen") ||
+                                      lower.Contains("spoofer") || lower.Contains("kiddions");
 
                 // Check digital signature
                 if (!record.Signature.IsSigned || !record.Signature.IsTrustedVendor)
@@ -342,19 +403,19 @@ public class ScanEngine
                             moduleId = "file-system-scanner",
                             category = "Detection",
                             severity = "Critical",
-                            title = $"Unsigned Suspicious Executable in User Storage: {record.FileName}",
+                            title = $"Unsigned Known Cheat Executable in User Storage: {record.FileName}",
                             description = $"File '{record.FullPath}' ({record.FileSizeBytes:N0} bytes) matches cheat naming without trusted signature.",
                             filePath = record.FullPath,
                             fileHash = record.Sha256Hash,
                             artifactTimestamp = record.LastWriteTimeUtc,
-                            confidence = 88,
+                            confidence = 90,
                             explanation = "Executable located in user directory matches known game manipulation nomenclature."
                         });
                     }
                 }
             }
 
-            // 2. Scan file buffer with Signature Engine
+            // 2. Scan file buffer with Signature Engine (with generic API false-positive protection)
             if (record.FileSizeBytes > 0 && record.FileSizeBytes < 10 * 1024 * 1024)
             {
                 try
@@ -374,7 +435,7 @@ public class ScanEngine
                             filePath = record.FullPath,
                             fileHash = record.Sha256Hash,
                             artifactTimestamp = record.LastWriteTimeUtc,
-                            confidence = 90,
+                            confidence = 88,
                             explanation = $"Static binary signature rule '{sm.RuleId}' matched file content."
                         });
                     }
@@ -395,12 +456,31 @@ public class ScanEngine
         // 1. Scan Prefetch
         try
         {
-            var pfEntries = PrefetchParser.ScanDirectory().ToList();
+            List<PrefetchEntry> pfEntries;
+            if (ElevationManager.IsElevated && ElevationManager.CollectorClient != null)
+            {
+                var resp = await ElevationManager.CollectorClient.SendRequestAsync(new CollectorRequest
+                {
+                    Command = IpcCommands.ScanPrefetch
+                }, ct);
+
+                pfEntries = resp.Success && !string.IsNullOrEmpty(resp.DataJson)
+                    ? JsonSerializer.Deserialize<List<PrefetchEntry>>(resp.DataJson) ?? new()
+                    : PrefetchParser.ScanDirectory().ToList();
+            }
+            else
+            {
+                pfEntries = PrefetchParser.ScanDirectory().ToList();
+            }
+
             _collectedPrefetch.AddRange(pfEntries);
 
             foreach (var pf in pfEntries)
             {
                 ct.ThrowIfCancellationRequested();
+                if (SyScanIdentity.IsSyScanComponent(pf.SourceFilePath, pf.ExecutableName))
+                    continue;
+
                 if (pf.SuspiciousLocation || pf.SuspiciousReferencedFiles.Count > 0)
                 {
                     findings++;
@@ -429,6 +509,8 @@ public class ScanEngine
 
             foreach (var sh in shimEntries.Where(s => s.IsSuspicious))
             {
+                if (SyScanIdentity.IsSyScanComponent(sh.Path)) continue;
+
                 findings++;
                 await _api.SubmitFindingAsync(new
                 {
@@ -439,7 +521,7 @@ public class ScanEngine
                     description = $"Shimcache entry for '{sh.Path}' (Executed: {sh.Executed})",
                     filePath = sh.Path,
                     artifactTimestamp = sh.LastModifiedUtc,
-                    confidence = 82,
+                    confidence = 80,
                     explanation = "Windows AppCompatCache records historical executables evaluated for compatibility."
                 });
             }
@@ -454,6 +536,8 @@ public class ScanEngine
 
             foreach (var b in bamEntries.Where(b => b.IsSuspicious))
             {
+                if (SyScanIdentity.IsSyScanComponent(b.NormalizedPath)) continue;
+
                 findings++;
                 await _api.SubmitFindingAsync(new
                 {
@@ -471,25 +555,30 @@ public class ScanEngine
         }
         catch { }
 
-        // 4. Scan Jump Lists
+        // 4. Scan Jump Lists (CRITICAL FIX: deduplicated, only confirmed cheat targets flagged, ordinary files = info)
         try
         {
             var jumpEntries = JumpListParser.ScanRecentDestinations();
-            foreach (var jl in jumpEntries.Where(j => j.IsSuspicious))
+            foreach (var jl in jumpEntries)
             {
-                findings++;
-                await _api.SubmitFindingAsync(new
+                if (SyScanIdentity.IsSyScanComponent(jl.TargetPath)) continue;
+
+                if (jl.IsSuspicious)
                 {
-                    moduleId = "forensic-artifacts",
-                    category = "Suspicious",
-                    severity = "Warning",
-                    title = $"Jump List Recent Shortcut: {Path.GetFileName(jl.TargetPath)}",
-                    description = $"Recent taskbar / shell destination references: '{jl.TargetPath}'",
-                    filePath = jl.TargetPath,
-                    artifactTimestamp = jl.TargetModifiedUtc,
-                    confidence = 78,
-                    explanation = "Jump List stores user application launches and accessed files."
-                });
+                    findings++;
+                    await _api.SubmitFindingAsync(new
+                    {
+                        moduleId = "forensic-artifacts",
+                        category = "Detection",
+                        severity = "High",
+                        title = $"Suspicious Binary in Jump List History: {Path.GetFileName(jl.TargetPath)}",
+                        description = $"Recent taskbar / shell destination references cheat executable: '{jl.TargetPath}'",
+                        filePath = jl.TargetPath,
+                        artifactTimestamp = jl.TargetModifiedUtc,
+                        confidence = 85,
+                        explanation = "Jump List records user interaction with cheat executable."
+                    });
+                }
             }
         }
         catch { }
@@ -522,6 +611,13 @@ public class ScanEngine
                 using var subKey = key.OpenSubKey(subKeyName);
                 var displayName = subKey?.GetValue("DisplayName")?.ToString();
                 if (string.IsNullOrWhiteSpace(displayName)) continue;
+
+                // Never flag SyScan or EasyAntiCheat
+                if (displayName.Contains("SyScan", StringComparison.OrdinalIgnoreCase) ||
+                    displayName.Contains("EasyAntiCheat", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
 
                 if (suspiciousApps.Any(s => displayName.Contains(s, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -565,8 +661,9 @@ public class ScanEngine
                 var valData = key.GetValue(val)?.ToString();
                 if (string.IsNullOrEmpty(valData)) continue;
 
-                if (valData.Contains("temp", StringComparison.OrdinalIgnoreCase) ||
-                    valData.Contains("cheat", StringComparison.OrdinalIgnoreCase) ||
+                if (SyScanIdentity.IsSyScanComponent(valData)) continue;
+
+                if (valData.Contains("cheat", StringComparison.OrdinalIgnoreCase) ||
                     valData.Contains("bypass", StringComparison.OrdinalIgnoreCase))
                 {
                     findings++;
@@ -647,93 +744,90 @@ public class ScanEngine
     }
     #endregion
 
-    #region Module 11: File Deletion Scanner
+    #region Module 11: File Deletion Scanner (USN Journal via Elevated Collector)
     private async Task<ModuleRunResult> ScanFileDeletionAsync(CancellationToken ct)
     {
         int findings = 0;
+        DeletionInvestigationResult? usnResult = null;
 
-        // 1. Scan NTFS USN Change Journal
-        try
-        {
-            var usnResult = UsnJournalReader.ScanLiveVolumeJournal("C:", 10000);
-            _collectedUsnResult = usnResult;
-
-            if (usnResult.VolumeJournalAccessible)
-            {
-                // Report rename-before-delete sequences
-                foreach (var rbd in usnResult.RenamedBeforeDelete.Where(r => r.IsFileDelete))
-                {
-                    findings++;
-                    await _api.SubmitFindingAsync(new
-                    {
-                        moduleId = "file-deletion",
-                        category = "Detection",
-                        severity = "Critical",
-                        title = $"Renamed and Deleted Binary in USN Journal: {rbd.FileName}",
-                        description = $"File was renamed before deletion in NTFS USN Change Journal (FRN: {rbd.FileReferenceNumber})",
-                        filePath = rbd.FileName,
-                        artifactTimestamp = rbd.TimestampUtc,
-                        confidence = 92,
-                        explanation = "Anti-forensic pattern: binary renamed prior to deletion to evade static inspection."
-                    });
-                }
-
-                // Report suspicious deletions
-                foreach (var suspDel in usnResult.SuspiciousGameDeletions.Take(10))
-                {
-                    findings++;
-                    await _api.SubmitFindingAsync(new
-                    {
-                        moduleId = "file-deletion",
-                        category = "Suspicious",
-                        severity = "High",
-                        title = $"Recently Deleted Executable in USN Journal: {suspDel.FileName}",
-                        description = $"NTFS Journal recorded deletion at {suspDel.TimestampUtc:u}",
-                        filePath = suspDel.FileName,
-                        artifactTimestamp = suspDel.TimestampUtc,
-                        confidence = 80,
-                        explanation = "Recently deleted executable or DLL detected via NTFS USN Journal."
-                    });
-                }
-            }
-        }
-        catch { }
-
-        // 2. Scan Recycle Bin
-        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        string driveLetter = Path.GetPathRoot(userProfile) ?? "C:\\";
-        string recyclePath = Path.Combine(driveLetter, "$Recycle.Bin");
-
-        if (Directory.Exists(recyclePath))
+        // Try reading via elevated collector first
+        if (ElevationManager.IsElevated && ElevationManager.CollectorClient != null)
         {
             try
             {
-                var files = Directory.GetFiles(recyclePath, "*.*", SearchOption.AllDirectories);
-                foreach (var file in files)
+                var resp = await ElevationManager.CollectorClient.SendRequestAsync(new CollectorRequest
                 {
-                    ct.ThrowIfCancellationRequested();
-                    string fileName = Path.GetFileName(file);
-                    if (fileName.StartsWith("$R", StringComparison.OrdinalIgnoreCase) &&
-                        (fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
-                    {
-                        findings++;
-                        await _api.SubmitFindingAsync(new
-                        {
-                            moduleId = "file-deletion",
-                            category = "Suspicious",
-                            severity = "Warning",
-                            title = $"Deleted Executable In Recycle Bin: {fileName}",
-                            description = $"Deleted binary retained in Recycle Bin: '{file}'",
-                            filePath = file,
-                            fileHash = ComputeFileSha256(file),
-                            artifactTimestamp = File.GetLastWriteTimeUtc(file),
-                            confidence = 75,
-                            explanation = "Deleted executable file trace found in Recycle Bin metadata."
-                        });
-                    }
+                    Command = IpcCommands.ScanUsnJournal,
+                    Parameters = new() { { "drive", "C:" } }
+                }, ct);
+
+                if (resp.Success && !string.IsNullOrEmpty(resp.DataJson))
+                {
+                    usnResult = JsonSerializer.Deserialize<DeletionInvestigationResult>(resp.DataJson);
                 }
             }
             catch { }
+        }
+
+        if (usnResult == null)
+        {
+            try
+            {
+                usnResult = UsnJournalReader.ScanLiveVolumeJournal("C:", 10000);
+            }
+            catch { }
+        }
+
+        _collectedUsnResult = usnResult;
+
+        if (usnResult != null && usnResult.VolumeJournalAccessible)
+        {
+            foreach (var rbd in usnResult.RenamedBeforeDelete.Where(r => r.IsFileDelete))
+            {
+                if (SyScanIdentity.IsSyScanComponent(rbd.FileName)) continue;
+
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "file-deletion",
+                    category = "Detection",
+                    severity = "Critical",
+                    title = $"Renamed and Deleted Binary in USN Journal: {rbd.FileName}",
+                    description = $"File was renamed before deletion in NTFS USN Change Journal (FRN: {rbd.FileReferenceNumber})",
+                    filePath = rbd.FileName,
+                    artifactTimestamp = rbd.TimestampUtc,
+                    confidence = 92,
+                    explanation = "Anti-forensic pattern: binary renamed prior to deletion to evade static inspection."
+                });
+            }
+
+            foreach (var suspDel in usnResult.SuspiciousGameDeletions.Take(10))
+            {
+                if (SyScanIdentity.IsSyScanComponent(suspDel.FileName)) continue;
+
+                findings++;
+                await _api.SubmitFindingAsync(new
+                {
+                    moduleId = "file-deletion",
+                    category = "Suspicious",
+                    severity = "High",
+                    title = $"Recently Deleted Executable in USN Journal: {suspDel.FileName}",
+                    description = $"NTFS Journal recorded deletion at {suspDel.TimestampUtc:u}",
+                    filePath = suspDel.FileName,
+                    artifactTimestamp = suspDel.TimestampUtc,
+                    confidence = 80,
+                    explanation = "Recently deleted executable or DLL detected via NTFS USN Journal."
+                });
+            }
+        }
+        else
+        {
+            // Administrator privileges were denied or unavailable
+            return new ModuleRunResult(
+                true,
+                "Partial",
+                findings,
+                "NTFS USN Change Journal requires Windows Administrator privileges. Access was denied; partial collection performed.");
         }
 
         return new ModuleRunResult(true, "Completed", findings);
@@ -769,10 +863,13 @@ public class ScanEngine
             }
         }
 
-        // 2. Timestomp detection on collected files
+        // 2. Timestomp detection on collected files (excluding SyScan itself)
         foreach (var file in _collectedFiles.Where(f => f.IsSuspiciousPath).Take(50))
         {
             ct.ThrowIfCancellationRequested();
+            if (SyScanIdentity.IsSyScanComponent(file.FullPath, file.FileName))
+                continue;
+
             var ts = TimestompDetector.AnalyzeFile(file.FullPath);
             if (ts.TimestompDetected)
             {
@@ -792,7 +889,7 @@ public class ScanEngine
             }
         }
 
-        // 3. Evidence Correlation: Correlate all discovered artifacts across all modules!
+        // 3. Evidence Correlation across all collected artifacts
         try
         {
             var correlationReport = EvidenceCorrelationEngine.Correlate(
@@ -806,6 +903,9 @@ public class ScanEngine
 
             foreach (var incident in correlationReport.Incidents)
             {
+                if (SyScanIdentity.IsSyScanComponent(incident.PrimaryExecutable))
+                    continue;
+
                 findings++;
                 await _api.SubmitFindingAsync(new
                 {

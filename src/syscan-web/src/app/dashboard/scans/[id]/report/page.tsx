@@ -120,7 +120,7 @@ function ForensicReportContent() {
                 {report.scanId}
               </h1>
               <div className="text-xs text-slate-400 font-mono mt-1">
-                Generated: {new Date(report.timestamps.created).toUTCString()}
+                Generated: {new Date(report.timestamps.generated || report.timestamps.completed || report.timestamps.created).toUTCString()}
               </div>
             </div>
 
@@ -140,7 +140,7 @@ function ForensicReportContent() {
           </div>
 
           {/* Investigation Metadata Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-[#0b0e14] p-5 rounded-xl border border-[#232d42] text-xs font-mono mb-8 print:bg-slate-100 print:text-black">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 bg-[#0b0e14] p-5 rounded-xl border border-[#232d42] text-xs font-mono mb-8 print:bg-slate-100 print:text-black">
             <div>
               <span className="text-slate-500 uppercase block">Organization</span>
               <div className="text-slate-200 font-semibold flex items-center space-x-1 mt-0.5 print:text-black">
@@ -158,7 +158,7 @@ function ForensicReportContent() {
             </div>
 
             <div>
-              <span className="text-slate-500 uppercase block">Game Platform</span>
+              <span className="text-slate-500 uppercase block">Game Target</span>
               <div className="text-slate-200 font-semibold flex items-center space-x-1 mt-0.5 uppercase print:text-black">
                 <Gamepad2 className="w-3.5 h-3.5 text-emerald-400" />
                 <span>{report.game}</span>
@@ -172,10 +172,18 @@ function ForensicReportContent() {
                 <span>{report.timestamps.durationSeconds}s</span>
               </div>
             </div>
+
+            <div>
+              <span className="text-slate-500 uppercase block">Consent Decided</span>
+              <div className="text-slate-200 font-semibold flex items-center space-x-1 mt-0.5 print:text-black">
+                <FileCheck2 className="w-3.5 h-3.5 text-amber-400" />
+                <span>{report.timestamps.consent ? new Date(report.timestamps.consent).toLocaleTimeString() : 'Approved'}</span>
+              </div>
+            </div>
           </div>
 
           {/* Findings Summary Stats */}
-          <div className="grid grid-cols-3 gap-4 mb-8 text-center font-mono">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8 text-center font-mono">
             <div className="p-4 rounded-xl bg-[#0b0e14] border border-[#232d42]">
               <div className="text-2xl font-bold text-rose-400">{report.summary.critical}</div>
               <div className="text-[11px] text-slate-400 uppercase mt-1">Critical Signatures</div>
@@ -187,6 +195,10 @@ function ForensicReportContent() {
             <div className="p-4 rounded-xl bg-[#0b0e14] border border-[#232d42]">
               <div className="text-2xl font-bold text-purple-400">{report.summary.suspicious}</div>
               <div className="text-[11px] text-slate-400 uppercase mt-1">Suspicious Remnants</div>
+            </div>
+            <div className="p-4 rounded-xl bg-[#0b0e14] border border-[#232d42]">
+              <div className="text-2xl font-bold text-slate-400">{report.summary.informational ?? 0}</div>
+              <div className="text-[11px] text-slate-500 uppercase mt-1">Informational Evidence</div>
             </div>
           </div>
 

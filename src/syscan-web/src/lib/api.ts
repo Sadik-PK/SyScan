@@ -70,8 +70,10 @@ export interface ScanReport {
   timestamps: {
     created: string;
     connected?: string;
+    consent?: string;
     started?: string;
     completed?: string;
+    generated?: string;
     durationSeconds: number;
   };
   summary: {
@@ -79,6 +81,7 @@ export interface ScanReport {
     critical: number;
     warning: number;
     suspicious: number;
+    informational?: number;
     clean: boolean;
   };
   findings: ScanFinding[];

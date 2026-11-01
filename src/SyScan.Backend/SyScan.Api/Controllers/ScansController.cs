@@ -147,6 +147,7 @@ public class ScansController : ControllerBase
         var scan = await _db.ScanSessions
             .Include(s => s.Configuration)
             .Include(s => s.Findings)
+            .Include(s => s.ConsentRecords)
             .Include(s => s.Events.OrderBy(e => e.OccurredAt))
             .Include(s => s.Organization)
             .Include(s => s.CreatedByUser)
@@ -157,6 +158,9 @@ public class ScansController : ControllerBase
         var criticalFindings = scan.Findings.Count(f => f.Severity == FindingSeverity.Critical);
         var warningFindings = scan.Findings.Count(f => f.Severity == FindingSeverity.Warning);
         var suspiciousFindings = scan.Findings.Count(f => f.Severity == FindingSeverity.Suspicious);
+        var infoFindings = scan.Findings.Count(f => f.Severity == FindingSeverity.Information);
+
+        var consentAt = scan.ConsentRecords.OrderByDescending(c => c.DecidedAt).FirstOrDefault()?.DecidedAt;
 
         return Ok(new
         {
@@ -171,8 +175,10 @@ public class ScansController : ControllerBase
             {
                 created = scan.CreatedAt,
                 connected = scan.ConnectedAt,
+                consent = consentAt,
                 started = scan.ScanStartedAt,
                 completed = scan.ScanCompletedAt,
+                generated = DateTime.UtcNow,
                 durationSeconds = scan.ScanCompletedAt.HasValue && scan.ScanStartedAt.HasValue
                     ? (int)(scan.ScanCompletedAt.Value - scan.ScanStartedAt.Value).TotalSeconds
                     : 0
@@ -183,7 +189,8 @@ public class ScansController : ControllerBase
                 critical = criticalFindings,
                 warning = warningFindings,
                 suspicious = suspiciousFindings,
-                clean = scan.Findings.Count == 0
+                informational = infoFindings,
+                clean = criticalFindings == 0 && warningFindings == 0 && suspiciousFindings == 0
             },
             findings = scan.Findings.OrderByDescending(f => f.Severity).Select(f => new
             {

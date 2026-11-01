@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SyScan.Collector</RootNamespace>
+    <AssemblyName>SyScan.Collector</AssemblyName>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SyScan.Scanner\SyScan.Scanner.csproj" />
+    <ProjectReference Include="..\..\SyScan.Backend\SyScan.Core\SyScan.Core.csproj" />
+  </ItemGroup>
+</Project>

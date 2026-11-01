@@ -5,12 +5,26 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using SyScan.Scanner.Allowlist;
+using SyScan.Scanner.FileSystem;
 
 namespace SyScan.Scanner.Signatures;
 
 public sealed class SignatureEngine
 {
     private readonly List<DetectionRule> _rules = new();
+
+    private static readonly string[] WhitelistedSystemLibraries = new[]
+    {
+        "api-ms-win-",
+        "msvcr",
+        "msvcp",
+        "vcruntime",
+        "ucrtbase",
+        "clr.dll",
+        "mscoree.dll",
+        "unitycrashhandler"
+    };
 
     public SignatureEngine()
     {
@@ -28,10 +42,33 @@ public sealed class SignatureEngine
         if (buffer == null || buffer.Length == 0)
             return matches;
 
+        // 1. Suppress SyScan self-detection
+        if (SyScanIdentity.IsSyScanComponent(sourcePath))
+            return matches;
+
+        // 2. Suppress system runtime libraries and crash handlers from generic rule false positives
+        string fileName = Path.GetFileName(sourcePath).ToLowerInvariant();
+        foreach (var prefix in WhitelistedSystemLibraries)
+        {
+            if (fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return matches;
+        }
+
+        // 3. Check digital signature if file exists
+        if (!string.IsNullOrEmpty(sourcePath) && File.Exists(sourcePath))
+        {
+            var sig = AuthenticodeVerifier.Verify(sourcePath);
+            if (sig.IsSigned && sig.IsTrustedVendor && (sig.Subject?.Contains("Microsoft") == true || sig.Subject?.Contains("Unity") == true))
+            {
+                // Trusted Microsoft / Unity platform binaries should not be scanned for generic injection strings
+                return matches;
+            }
+        }
+
         // Hash check
         string sha256 = ComputeSha256(buffer);
 
-        // Convert buffer to ASCII string and lowercase for fast string pattern matching
+        // Convert buffer to ASCII string for fast pattern matching
         string asciiContent = Encoding.ASCII.GetString(buffer);
 
         foreach (var rule in _rules)
@@ -73,7 +110,7 @@ public sealed class SignatureEngine
                     }
                 }
 
-                // If at least 2 patterns match (or 1 if rule only has 1 pattern)
+                // Require at least 2 distinct strings (or all if rule has 1)
                 int threshold = Math.Min(2, rule.StringPatterns.Count);
                 if (matchedCount >= threshold)
                 {
@@ -84,7 +121,7 @@ public sealed class SignatureEngine
                         Category = rule.Category,
                         Severity = rule.Severity,
                         Description = rule.Description,
-                        MatchedPattern = $"{matchedCount}/{rule.StringPatterns.Count} strings matched (e.g. '{lastPattern}')",
+                        MatchedPattern = $"{matchedCount}/{rule.StringPatterns.Count} strings matched ('{lastPattern}')",
                         FilePath = sourcePath,
                         MatchOffset = firstOffset
                     });
@@ -119,6 +156,10 @@ public sealed class SignatureEngine
     public async Task<List<SignatureMatchResult>> ScanFileAsync(string filePath, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(filePath))
+            return new List<SignatureMatchResult>();
+
+        // Suppress SyScan self-detection
+        if (SyScanIdentity.IsSyScanComponent(filePath))
             return new List<SignatureMatchResult>();
 
         try
@@ -167,4 +208,3 @@ public sealed class SignatureEngine
         return Convert.ToHexStringLower(hash);
     }
 }
-
