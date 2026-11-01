@@ -16,3 +16,4 @@
     <ProjectReference Include="..\..\SyScan.Backend\SyScan.Core\SyScan.Core.csproj" />
   </ItemGroup>
 </Project>
+

@@ -88,3 +88,4 @@ public sealed class DriveReconInfo
     public long AvailableFreeBytes { get; set; }
     public bool IsReady { get; set; }
 }
+

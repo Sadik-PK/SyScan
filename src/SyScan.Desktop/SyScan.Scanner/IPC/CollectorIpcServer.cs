@@ -183,3 +183,4 @@ public sealed class CollectorIpcServer : IDisposable
         _cts.Dispose();
     }
 }
+

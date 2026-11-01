@@ -127,3 +127,4 @@ public sealed class CollectorIpcClient : IDisposable
         _lock.Dispose();
     }
 }
+

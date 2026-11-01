@@ -42,3 +42,4 @@ public static class SyScanIdentity
         return false;
     }
 }
+

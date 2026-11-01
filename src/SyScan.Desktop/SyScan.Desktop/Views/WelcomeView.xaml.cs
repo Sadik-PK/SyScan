@@ -9,6 +9,24 @@ public partial class WelcomeView : UserControl
     public WelcomeView()
     {
         InitializeComponent();
+        Loaded += WelcomeView_Loaded;
+    }
+
+    private void WelcomeView_Loaded(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(TokenInput.Text) && Clipboard.ContainsText())
+            {
+                var text = Clipboard.GetText().Trim();
+                var token = ExtractToken(text);
+                if (!string.IsNullOrEmpty(token))
+                {
+                    TokenInput.Text = token;
+                }
+            }
+        }
+        catch { }
     }
 
     private void VerifyButton_Click(object sender, RoutedEventArgs e)

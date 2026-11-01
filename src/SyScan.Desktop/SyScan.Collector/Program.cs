@@ -407,3 +407,4 @@ public sealed class ProcessSnapshotRecord
     public DateTime? StartTimeUtc { get; set; }
     public bool IsSyScan { get; set; }
 }
+

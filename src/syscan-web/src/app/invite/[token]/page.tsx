@@ -206,6 +206,19 @@ function ParticipantInviteContent() {
                   <span>{copied ? 'Copied Token!' : 'Copy Token'}</span>
                 </button>
               </div>
+
+              <div className="flex items-center justify-center space-x-2 pt-1 text-[11px] font-mono text-slate-400">
+                <span>Alternative:</span>
+                <a
+                  href="/downloads/SyScan-Portable.zip"
+                  download="SyScan-Portable.zip"
+                  onClick={() => { copyToken(); setDownloadStarted(true); }}
+                  className="text-blue-400 hover:text-blue-300 underline font-semibold flex items-center space-x-1"
+                >
+                  <ArrowDownToLine className="w-3 h-3" />
+                  <span>Download Portable Bundle (.zip)</span>
+                </a>
+              </div>
             </div>
 
             {/* Quick 3-Step Guide */}

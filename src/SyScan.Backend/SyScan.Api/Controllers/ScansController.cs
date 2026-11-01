@@ -48,7 +48,28 @@ public class ScansController : ControllerBase
 
         // Auto-assign default organization if none associated
         var user = await _db.Users.FindAsync(userId);
-        if (user == null) return null;
+        if (user == null)
+        {
+            var email = User.FindFirstValue(ClaimTypes.Email) ?? User.FindFirstValue("email");
+            var name = User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "User";
+            if (!string.IsNullOrEmpty(email))
+            {
+                user = new User
+                {
+                    Id = userId,
+                    Email = email,
+                    DisplayName = name,
+                    PasswordHash = "rehydrated",
+                    IsActive = true
+                };
+                _db.Users.Add(user);
+                await _db.SaveChangesAsync();
+            }
+            else
+            {
+                return null;
+            }
+        }
 
         var org = await _db.Organizations.FirstOrDefaultAsync(o => o.IsActive);
         if (org == null)
